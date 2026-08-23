@@ -680,3 +680,88 @@ def test_an_interrupted_teardown_gives_the_host_its_stdout_back():
     assert result.returncode == 0, result.stderr
     assert "STDOUT_IS_BACK" in result.stdout
     assert "STDOUT_IS_BACK" not in result.stderr
+
+
+def test_an_interrupted_teardown_still_drains_the_other_buffers():
+    """An interrupt in one drain must not leave another buffer full.
+
+    Bytes left behind here are emitted after fd 1 is restored, which puts them
+    on the JSON-RPC channel — so being interrupted is not a reason to skip the
+    remaining drains, only to re-raise once they have all been attempted.
+    """
+    result = _run_child(r"""
+        import ctypes
+        import arxiv_mcp_server.stdio_guard as guard
+        libc = ctypes.CDLL(None)
+
+        with guard.protected_stdout() as protocol:
+            protocol.write('{"jsonrpc":"2.0","id":18}\n')
+            protocol.flush()
+
+        class Interrupting:
+            armed = False
+            def __init__(self, wrapped): self._w = wrapped
+            def __getattr__(self, k): return getattr(self._w, k)
+            def fileno(self): return self._w.fileno()
+            def flush(self):
+                # Armed only inside the block, so the interrupt lands in the
+                # TEARDOWN drain; the entry drain runs normally.
+                if Interrupting.armed:
+                    Interrupting.armed = False
+                    raise KeyboardInterrupt("during teardown drain")
+                return self._w.flush()
+
+        sys.stdout = Interrupting(sys.__stdout__)
+        try:
+            with guard.protected_stdout() as protocol:
+                libc.printf(b"C_MUST_STILL_DRAIN\n")   # buffered, not flushed
+                protocol.write('{"jsonrpc":"2.0","id":19}\n')
+                protocol.flush()
+                Interrupting.armed = True
+        except KeyboardInterrupt:
+            pass
+        sys.stdout = sys.__stdout__
+        libc.fflush(None)
+        """)
+
+    assert result.returncode == 0, result.stderr
+    assert "C_MUST_STILL_DRAIN" not in result.stdout
+    assert "C_MUST_STILL_DRAIN" in result.stderr
+
+
+def test_an_interrupted_first_drain_does_not_consume_the_first_entry():
+    """The marker is committed after the drains, not before them.
+
+    Committing it earlier would send a retry down the later-entry path, where
+    the drain happens *before* the sink is installed — flushing startup bytes
+    straight onto a live protocol channel.
+    """
+    result = _run_child(r"""
+        import arxiv_mcp_server.stdio_guard as guard
+
+        print("PY_STARTUP_DIAG", end="")
+        real_drain = guard._drain
+        armed = []
+
+        def interrupt_first_drain(*flushes):
+            if not armed:
+                armed.append(1)
+                raise KeyboardInterrupt("during first-entry drain")
+            return real_drain(*flushes)
+
+        guard._drain = interrupt_first_drain
+        try:
+            with guard.protected_stdout():
+                pass
+        except KeyboardInterrupt:
+            pass
+        guard._drain = real_drain
+
+        with guard.protected_stdout() as protocol:
+            protocol.write('{"jsonrpc":"2.0","id":20}\n')
+            protocol.flush()
+        """)
+
+    assert result.returncode == 0, result.stderr
+    assert "PY_STARTUP_DIAG" not in result.stdout
+    assert "PY_STARTUP_DIAG" in result.stderr

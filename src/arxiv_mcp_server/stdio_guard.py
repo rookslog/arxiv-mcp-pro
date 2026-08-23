@@ -189,6 +189,29 @@ def _flush_c_stdio(*, quiet: bool = False) -> None:
             logger.debug("stdio guard: could not flush C stdio: %r", exc)
 
 
+def _drain(*flushes: Any) -> None:
+    """Run every drain, even if an earlier one raises.
+
+    A `KeyboardInterrupt` landing inside one flush must not skip the rest.
+    Anything left in a buffer here is emitted later — after fd 1 has been
+    restored — which puts it on the JSON-RPC channel, so "we were interrupted"
+    is not a reason to leave a buffer full. `ValueError` and `OSError` mean the
+    stream is already gone and are ignored per flush; the first of anything
+    else is re-raised once all of them have been attempted, so the caller still
+    sees the original failure.
+    """
+    pending: BaseException | None = None
+    for flush in flushes:
+        try:
+            with contextlib.suppress(ValueError, OSError):
+                flush()
+        except BaseException as exc:  # noqa: BLE001 - re-raised below
+            if pending is None:
+                pending = exc
+    if pending is not None:
+        raise pending
+
+
 def _win32_kernel32() -> Any:  # pragma: no cover - platform-specific
     """kernel32 with pointer-width types on the standard-handle calls.
 
@@ -358,9 +381,10 @@ def protected_stdout() -> Iterator[TextIO]:
     # ambiguous first-entry case: a misplaced diagnostic merely appears on
     # stderr, while a misplaced byte on the protocol channel kills the session.
     if not first_entry:
-        with contextlib.suppress(ValueError, OSError):
-            original_stdout.flush()
-        _flush_c_stdio(quiet=stderr_is_protocol)
+        _drain(
+            original_stdout.flush,
+            lambda: _flush_c_stdio(quiet=stderr_is_protocol),
+        )
 
     if stderr_is_protocol:
         # stderr IS the protocol channel; it cannot also be the sink.
@@ -429,9 +453,6 @@ def protected_stdout() -> Iterator[TextIO]:
 
         os.dup2(sink, stdout_fd, inheritable=stdout_inheritable)
         stdout_diverted = True
-        # The setup that had to survive is done; only now does this count as an
-        # entry for the next caller.
-        _entered_before = True
         _win32_set_stdout_handle(
             _win32_handle_for_fd(stdout_fd, quiet=stderr_is_protocol),
             quiet=stderr_is_protocol,
@@ -440,10 +461,16 @@ def protected_stdout() -> Iterator[TextIO]:
         # buffered before the guard existed — in either layer. Doing it here
         # rather than at teardown also means an operator watching stderr sees
         # the diagnostic near when it happened, not at session end.
-        if first_entry:
-            with contextlib.suppress(ValueError, OSError):
-                original_stdout.flush()
-        _flush_c_stdio(quiet=stderr_is_protocol)
+        _drain(
+            *((original_stdout.flush,) if first_entry else ()),
+            lambda: _flush_c_stdio(quiet=stderr_is_protocol),
+        )
+
+        # Everything that had to succeed has. Only now does this count as an
+        # entry for the next caller — a marker committed before the drains
+        # would let an interrupted first attempt send the retry down the
+        # later-entry path, flushing startup bytes onto a live channel.
+        _entered_before = True
     except BaseException:
         # Undo the diversion before releasing anything. Without this, a failure
         # after fd 1 was pointed at the sink — a KeyboardInterrupt during the
@@ -491,22 +518,24 @@ def protected_stdout() -> Iterator[TextIO]:
     try:
         yield protected
     finally:
-        # The flushes are wrapped so that restoration runs even when one of
-        # them raises something `contextlib.suppress` and `_flush_c_stdio` do
-        # not catch — a KeyboardInterrupt during the drain is enough. Leaving
-        # this `finally` early would strand the host's stdout on the sink for
-        # the life of the process, with its only surviving copy closed below.
+        # Two guarantees here, and an interrupt during a drain would break
+        # both without them. `_drain` attempts every buffer even if one raises,
+        # because bytes left behind are emitted after the restore below — onto
+        # the JSON-RPC channel. The enclosing `finally` then restores the
+        # descriptor whatever happened, since leaving early would strand the
+        # host's stdout on the sink for the life of the process, with its only
+        # surviving copy closed a few lines down.
         #
         # A library holding a pre-guard reference to stdout may have written
         # without flushing, which is normal when stdout is a pipe. Both buffers
         # are drained while fd 1 still points at the sink; draining after the
         # restore would empty those bytes straight onto the JSON-RPC channel.
         try:
-            with contextlib.suppress(ValueError, OSError):
-                original_stdout.flush()
-            with contextlib.suppress(ValueError, OSError):
-                protected.flush()
-            _flush_c_stdio(quiet=stderr_is_protocol)
+            _drain(
+                original_stdout.flush,
+                protected.flush,
+                lambda: _flush_c_stdio(quiet=stderr_is_protocol),
+            )
         finally:
             try:
                 os.dup2(protected_fd, stdout_fd, inheritable=stdout_inheritable)

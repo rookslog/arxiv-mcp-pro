@@ -10,6 +10,17 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **CI and fresh installs were broken by `mcp` 2.0.** The dependency was
+  specified as `mcp>=1.27.0` with no upper bound. `mcp` 2.0 removed the
+  low-level `Server` decorator API — `list_prompts`, `get_prompt`, `list_tools`,
+  `call_tool` — that `server.py` is built on, so any environment resolving 2.0
+  failed at import with `AttributeError: 'Server' object has no attribute
+  'list_prompts'`. Every test module failed at collection, and a fresh
+  `pip install arxiv-mcp-pro` produced a server that could not start. Pinned to
+  `mcp>=1.27.0,<2` pending a deliberate 2.0 migration.
+
 ## [0.8.0] - 2026-07-17
 
 Repo polish after the v0.7.0 PyPI release, plus reliability/ergonomics fixes

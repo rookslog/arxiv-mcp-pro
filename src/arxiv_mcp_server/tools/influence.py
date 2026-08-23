@@ -33,7 +33,9 @@ import re
 from typing import Any, Dict, Iterable, List, Optional
 
 import httpx
+from pydantic import Field
 import mcp.types as types
+from ..schemas import ToolInput, schema_from_model
 from mcp.types import ToolAnnotations
 
 # Reuse (do not duplicate) the Semantic Scholar plumbing from citation_graph.
@@ -87,6 +89,30 @@ HAS_CODE_PATTERNS = (
 )
 
 
+class LibraryInfluenceInput(ToolInput):
+    """Arguments for the `library_influence` tool."""
+
+    compact: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Return minified JSON (lower token cost), mirroring citation_graph's compact convention."
+        ),
+    )
+    paper_ids: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Restrict the panel to this subset of arXiv IDs. Omit to use the entire local library."
+        ),
+    )
+    top_k: int = Field(
+        default=20,
+        ge=1,
+        description=(
+            "Maximum number of rows to return, ranked by local PageRank descending (default: 20)."
+        ),
+    )
+
+
 library_influence_tool = types.Tool(
     name="library_influence",
     annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
@@ -103,36 +129,7 @@ library_influence_tool = types.Tool(
         "with `paper_ids`. Requires the 'influence' extra: "
         "pip install arxiv-mcp-pro[influence]."
     ),
-    inputSchema={
-        "type": "object",
-        "properties": {
-            "top_k": {
-                "type": "integer",
-                "minimum": 1,
-                "default": 20,
-                "description": (
-                    "Maximum number of rows to return, ranked by local "
-                    "PageRank descending (default: 20)."
-                ),
-            },
-            "paper_ids": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "Restrict the panel to this subset of arXiv IDs. Omit to "
-                    "use the entire local library."
-                ),
-            },
-            "compact": {
-                "type": "boolean",
-                "description": (
-                    "Return minified JSON (lower token cost), mirroring "
-                    "citation_graph's compact convention."
-                ),
-            },
-        },
-        "additionalProperties": False,
-    },
+    inputSchema=schema_from_model(LibraryInfluenceInput),
 )
 
 

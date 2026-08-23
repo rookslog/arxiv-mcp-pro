@@ -10,6 +10,22 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- **Tool input schemas are now generated from pydantic models instead of being
+  hand-written.** Each tool had a JSON Schema dict sitting next to a handler
+  that read `arguments` by key, with nothing tying the two together. They could
+  drift silently, and cross-cutting schema work meant editing every tool by
+  hand — `d22255b` added `additionalProperties: false` to nine files, one line
+  at a time. The model is now the single definition; `ToolInput` sets
+  `extra="forbid"`, so a closed schema is inherited rather than remembered.
+
+  No client-observable change: all eleven advertised schemas and descriptions
+  are byte-identical to the ones they replace, locked in by a snapshot captured
+  before the refactor (`tests/fixtures/tool_schema_snapshot.json`). The one
+  normalisation is that four tools which omitted `required` now emit
+  `required: []` like the other seven, which is semantically the same.
+
 ### Fixed
 
 - **CI and fresh installs were broken by `mcp` 2.0.** The dependency was

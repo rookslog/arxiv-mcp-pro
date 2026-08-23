@@ -3,9 +3,11 @@
 import json
 import re
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional
+from pydantic import Field
 import mcp.types as types
 from mcp.types import ToolAnnotations
+from ..schemas import ToolInput, schema_from_model
 from ..config import Settings
 
 settings = Settings()
@@ -24,6 +26,12 @@ def is_valid_arxiv_id(stem: str) -> bool:
     return bool(_ARXIV_ID_RE.match(stem))
 
 
+class ListPapersInput(ToolInput):
+    """Arguments for the `list_papers` tool."""
+
+    # No arguments; the closed schema rejects any that are supplied.
+
+
 list_tool = types.Tool(
     name="list_papers",
     annotations=ToolAnnotations(readOnlyHint=True),
@@ -33,12 +41,7 @@ list_tool = types.Tool(
         "Returns an empty list if no papers have been downloaded yet. "
         "Workflow: search_papers -> download_paper -> list_papers -> read_paper."
     ),
-    inputSchema={
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "additionalProperties": False,
-    },
+    inputSchema=schema_from_model(ListPapersInput),
 )
 
 

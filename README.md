@@ -348,6 +348,7 @@ Configure through command-line options and environment variables:
 | `SEMANTIC_SCHOLAR_MIN_REQUEST_INTERVAL` | Minimum seconds between Semantic Scholar requests. `0` (default) disables pacing. An authenticated API key grants ~1 request/second across all endpoints, so set this to ~`1.1` to pace requests proactively instead of bursting and relying on 429 retry/backoff. | `0` |
 | `ARXIV_MIN_REQUEST_INTERVAL` | Minimum seconds between arXiv API requests (arXiv asks for ≥3s per IP, globally). Sessions on one machine coordinate through a lock file in the storage dir, so parallel/multi-agent use stays under the limit. `0` disables all arXiv pacing (including the cross-process lock file). See "Parallel / multi-agent use" below. | `3` |
 | `CITATION_MAX_EDGES` | Optional cap on citation/reference edges returned by `citation_graph`'s legacy (non-paginated) path. Unset (default) returns all edges; a `truncated` flag is added when the cap bites. | empty |
+| `EMBEDDING_MODEL` | Optional override for the `semantic_search` embedding model. Unset (default) uses the active backend's default: `minishlab/potion-retrieval-32M` for the lightweight model2vec backend (`[pro]`), or `sentence-transformers/all-MiniLM-L6-v2` for the parity backend (`[pro-st]`). Set it to a model2vec/static-model repo id (model2vec backend) or an ST-compatible id (ST backend). Changing the model invalidates the local index — run the `reindex` tool afterwards. | empty |
 
 ### Parallel / multi-agent use
 
@@ -386,6 +387,14 @@ uv pip install -e ".[pro]"
 
 ### Semantic Search
 Semantic similarity search over your **locally downloaded** papers only. Returns empty results if no papers have been downloaded yet. Requires `[pro]` dependencies.
+
+**Embedding backends.** `[pro]` installs a lightweight [model2vec](https://github.com/MinishLab/model2vec) backend — static, torch-free embeddings (~100 MB incl. numpy/tokenizers), default model `minishlab/potion-retrieval-32M` (512-dim, retrieval-tuned). This replaces the previous sentence-transformers/torch stack (~600 MB larger). If you need byte-identical parity with indexes built before this change, install the original backend instead:
+
+```bash
+uv pip install -e ".[pro-st]"   # sentence-transformers/all-MiniLM-L6-v2 (384-dim, ~700 MB via torch)
+```
+
+Backend auto-detection: **sentence-transformers wins when it is importable**, so an existing `[pro-st]` (or legacy sentence-transformers) install keeps its 384-dim index working unchanged; otherwise model2vec is used. Set `EMBEDDING_MODEL` to override the active backend's default model. Switching backends or models changes the embedding dimension/vectors, so **run the `reindex` tool** afterwards — until you do, `semantic_search` detects the mismatch and returns a clear "run reindex" message rather than mis-ranking or crashing.
 
 ```python
 result = await call_tool("semantic_search", {

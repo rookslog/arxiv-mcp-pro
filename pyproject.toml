@@ -94,6 +94,23 @@ dev = [
     "black>=23.3.0"
 ]
 pro = [
+    # Lightweight default embedding backend for `semantic_search` (B23):
+    # model2vec ships static (torch-free) embeddings — ~100 MB incl. numpy /
+    # tokenizers, versus the ~600 MB sentence-transformers→torch chain it
+    # replaces. Its default model is `minishlab/potion-retrieval-32M`
+    # (retrieval-tuned, 512-dim). Users who want byte-identical parity with the
+    # previous default (all-MiniLM-L6-v2) embeddings install `[pro-st]` instead;
+    # when both are present sentence-transformers wins (see
+    # semantic_search._active_backend).
+    "model2vec>=0.8.0",
+    "numpy>=1.26.0",
+]
+pro-st = [
+    # Opt-in parity backend: the original sentence-transformers/all-MiniLM-L6-v2
+    # (384-dim) embeddings, kept for users who need exact continuity with indexes
+    # built before B23 (the model2vec switch). Heavier (~700 MB via torch) — most
+    # users should prefer `[pro]`. When installed, it takes precedence over
+    # model2vec so existing 384-dim indexes keep working unchanged.
     "sentence-transformers>=3.0.0",
     "numpy>=1.26.0",
 ]

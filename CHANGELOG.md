@@ -10,6 +10,23 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- **New `[pro-st]` extra** (B23): the original sentence-transformers backend
+  (`sentence-transformers/all-MiniLM-L6-v2`, 384-dim), for users who need exact
+  parity with `semantic_search` indexes built before the model2vec switch. It is
+  auto-detected and takes precedence over model2vec when installed, so existing
+  sentence-transformers installs keep their 384-dim index working unchanged.
+- **`EMBEDDING_MODEL` setting** (env var, no prefix): override the active
+  backend's default embedding model. Must be a model2vec/static-model repo id for
+  the model2vec backend or an ST-compatible id for the sentence-transformers
+  backend; changing it invalidates the local index (run `reindex`).
+- **Index-model compatibility guard** (B23): the semantic index now records which
+  embedding model built it (a new `index_meta` table). If a search runs against an
+  index built by a different model (or dimension), `semantic_search` returns a
+  clear "run `reindex`" message instead of silently mis-ranking or raising a numpy
+  shape error. `reindex` with `clear_existing=false` refuses to mix embedding
+  dimensions in one index.
+
 ### Changed
 
 - **Tool input schemas are now generated from pydantic models instead of being
@@ -26,6 +43,15 @@ All notable changes to this project are documented here. The format is based on
   normalisation is that four tools which omitted `required` now emit
   `required: []` like the other seven, which is semantically the same.
 
+- **`[pro]` now installs the lightweight model2vec backend** for `semantic_search`
+  (B23): static, torch-free embeddings (default model
+  `minishlab/potion-retrieval-32M`, 512-dim, retrieval-tuned) — roughly 600 MB
+  smaller than the sentence-transformers/torch chain it replaces. Existing
+  sentence-transformers installs are auto-detected and unaffected (they win over
+  model2vec). Because the default model changes dimension (384 → 512), an index
+  built by the old backend is incompatible with a fresh model2vec install; the new
+  compatibility guard tells you to `reindex` rather than failing obscurely. Users
+  who need the previous embeddings can install `[pro-st]` (see Added).
 ### Fixed
 
 - **CI and fresh installs were broken by `mcp` 2.0.** The dependency was

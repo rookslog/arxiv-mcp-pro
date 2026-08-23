@@ -1,5 +1,6 @@
 """Tests for paper download functionality (sync HTML-first pipeline)."""
 
+import asyncio
 import pytest
 import json
 from unittest.mock import MagicMock
@@ -14,6 +15,62 @@ from arxiv_mcp_server.tools.download import (
     _download_arxiv_pdf_to_path,
     PaperNotFoundError,
 )
+
+
+@pytest.fixture(autouse=True)
+def _stub_background_indexing(monkeypatch):
+    """Neutralize download.py's fire-and-forget semantic indexing in these tests,
+    while RECORDING that it was scheduled.
+
+    handle_download schedules `asyncio.create_task(_run_index_by_id(...))` on a
+    cache hit / successful fetch. With the real (unmocked) indexer those tasks
+    perform a LIVE arXiv fetch and write the shared semantic index — real network
+    + real home-dir DB leaking out of otherwise-hermetic unit tests that mock
+    every foreground fetch. Left live, concurrent background writers also contend
+    on the index write lock (B23's BEGIN IMMEDIATE) and can deadlock at
+    event-loop teardown. Replace both indexing coroutines with recording async
+    no-ops (R6): the returned list captures each scheduled call so a test can
+    assert the download path still wires up indexing.
+    """
+    import arxiv_mcp_server.tools.download as dl
+
+    calls: list = []
+
+    async def _noop_by_id(paper_id):
+        calls.append(("by_id", paper_id))
+
+    async def _noop_from_result(arxiv_result):
+        calls.append(("from_result", arxiv_result))
+
+    monkeypatch.setattr(dl, "_run_index_by_id", _noop_by_id)
+    monkeypatch.setattr(dl, "_run_index_from_result", _noop_from_result)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_successful_download_schedules_background_index(
+    temp_storage_path, mocker, _stub_background_indexing
+):
+    """R6: handle_download still WIRES UP background semantic indexing. A cache
+    hit schedules _run_index_by_id for the paper (the stub records it instead of
+    doing real work)."""
+    paper_id = "2506.00001"
+
+    def fake_path(pid, suffix=".md"):
+        return temp_storage_path / f"{pid}{suffix}"
+
+    mocker.patch(
+        "arxiv_mcp_server.tools.download.get_paper_path", side_effect=fake_path
+    )
+    (temp_storage_path / f"{paper_id}.md").write_text("cached body", encoding="utf-8")
+
+    response = await handle_download({"paper_id": paper_id})
+    assert json.loads(response[0].text)["status"] == "success"
+
+    # Let the scheduled create_task run, then confirm it was scheduled.
+    await asyncio.sleep(0)
+    assert ("by_id", paper_id) in _stub_background_indexing
+
 
 # ---------------------------------------------------------------------------
 # PDF download helper (httpx streaming)

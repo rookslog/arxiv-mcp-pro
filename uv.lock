@@ -198,7 +198,7 @@ wheels = [
 
 [[package]]
 name = "arxiv-mcp-pro"
-version = "0.7.0"
+version = "0.8.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },
@@ -225,6 +225,10 @@ pdf = [
     { name = "pymupdf4llm" },
 ]
 pro = [
+    { name = "model2vec" },
+    { name = "numpy" },
+]
+pro-st = [
     { name = "numpy" },
     { name = "sentence-transformers" },
 ]
@@ -249,9 +253,11 @@ requires-dist = [
     { name = "black", marker = "extra == 'test'", specifier = ">=25.1.0" },
     { name = "httpx", specifier = ">=0.24.0" },
     { name = "mcp", specifier = ">=1.27.0" },
+    { name = "model2vec", marker = "extra == 'pro'", specifier = ">=0.8.0" },
     { name = "networkx", marker = "extra == 'influence'", specifier = ">=3.0" },
     { name = "networkx", marker = "extra == 'test'", specifier = ">=3.0" },
     { name = "numpy", marker = "extra == 'pro'", specifier = ">=1.26.0" },
+    { name = "numpy", marker = "extra == 'pro-st'", specifier = ">=1.26.0" },
     { name = "numpy", marker = "extra == 'test'", specifier = ">=1.26.0" },
     { name = "pydantic", specifier = ">=2.8.0" },
     { name = "pydantic-settings", specifier = ">=2.1.0" },
@@ -264,11 +270,11 @@ requires-dist = [
     { name = "python-dateutil", specifier = ">=2.8.2" },
     { name = "scipy", marker = "extra == 'influence'", specifier = ">=1.10" },
     { name = "scipy", marker = "extra == 'test'", specifier = ">=1.10" },
-    { name = "sentence-transformers", marker = "extra == 'pro'", specifier = ">=3.0.0" },
+    { name = "sentence-transformers", marker = "extra == 'pro-st'", specifier = ">=3.0.0" },
     { name = "starlette", specifier = ">=0.27.0" },
     { name = "uvicorn", specifier = ">=0.30.0" },
 ]
-provides-extras = ["pdf", "test", "dev", "pro", "influence"]
+provides-extras = ["pdf", "test", "dev", "pro", "pro-st", "influence"]
 
 [[package]]
 name = "attrs"
@@ -1090,6 +1096,23 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d6/54/cfe61301667036ec958cb99bd3efefba235e65cdeb9c84d24a8293ba1d90/mdurl-0.1.2.tar.gz", hash = "sha256:bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba", size = 8729, upload-time = "2022-08-14T12:40:10.846Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl", hash = "sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8", size = 9979, upload-time = "2022-08-14T12:40:09.779Z" },
+]
+
+[[package]]
+name = "model2vec"
+version = "0.8.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jinja2" },
+    { name = "joblib" },
+    { name = "numpy" },
+    { name = "safetensors" },
+    { name = "tokenizers" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/54/c8/8efa9e52d210957b02b1c711f4e3b88d1e9eb5485d1869aaa9833d0cd1c5/model2vec-0.8.2.tar.gz", hash = "sha256:4e88d1a5eb2136475ebd90505689046f61caf25c69371c331f21c6499637c110", size = 4532469, upload-time = "2026-05-29T12:01:21.035Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7b/a1/38101b223fb6cea0f2e401fbacdf4f6121628d45dc9329b255d7ac843234/model2vec-0.8.2-py3-none-any.whl", hash = "sha256:f0ecfe994316e401dca583fbf6dd22079d308c05717dd36d40bff60f265431cf", size = 54749, upload-time = "2026-05-29T12:01:19.411Z" },
 ]
 
 [[package]]

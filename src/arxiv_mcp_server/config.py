@@ -68,6 +68,17 @@ class Settings(BaseSettings):
     # including the cross-process lock file. Multiple machines behind one IP
     # remain uncoordinated (see the README "Parallel / multi-agent use" note).
     ARXIV_MIN_REQUEST_INTERVAL: float = 3.0
+    # Optional override for the `semantic_search` embedding model. Unset (the
+    # default) means each backend uses its built-in default model: the
+    # lightweight model2vec backend (`[pro]`) uses `minishlab/potion-retrieval-32M`;
+    # the sentence-transformers backend (`[pro-st]`) uses
+    # `sentence-transformers/all-MiniLM-L6-v2`. When set, this replaces the
+    # default for whichever backend is active — it MUST be a model2vec /
+    # static-model repo id for the model2vec backend, or an ST-compatible id for
+    # the sentence-transformers backend. Changing the model changes the embedding
+    # vectors (and often their dimension), which invalidates the local semantic
+    # index, so run the `reindex` tool after changing it.
+    EMBEDDING_MODEL: str | None = None
     model_config = SettingsConfigDict(extra="allow")
 
     @property

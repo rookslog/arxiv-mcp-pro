@@ -307,3 +307,50 @@ def test_host_output_between_sessions_reaches_real_stdout():
     assert result.returncode == 0, result.stderr
     assert "BETWEEN_SESSIONS" in result.stdout
     assert "BETWEEN_SESSIONS" not in result.stderr
+
+
+def test_an_occupied_fd_one_that_aliases_the_protocol_is_also_diverted():
+    """A host may move sys.stdout to a dup and leave fd 1 open on the same pipe.
+
+    Reserving fd 1 only when it is *free* leaves that case uncovered: raw
+    `os.write(1, ...)`, C-extension output, and anything reaching
+    `sys.__stdout__` still enter the JSON-RPC channel. Reproduced before the
+    fix — the stray bytes landed on protocol stdout.
+    """
+    result = _run_child(r"""
+        moved = os.dup(1)                       # fd 1 stays OPEN, same pipe
+        sys.stdout = os.fdopen(moved, "w")
+        with protected_stdout() as protocol:
+            os.write(1, b"STRAY_VIA_OCCUPIED_FD1\n")
+            protocol.write('{"jsonrpc":"2.0","id":10}\n')
+            protocol.flush()
+        os.write(1, b"HOST_FD1_RESTORED\n")
+        """)
+
+    assert result.returncode == 0, result.stderr
+    assert "STRAY_VIA_OCCUPIED_FD1" not in result.stdout
+    assert result.stdout.startswith('{"jsonrpc":"2.0","id":10}\n')
+    assert "HOST_FD1_RESTORED" in result.stdout
+
+
+def test_inconclusive_descriptor_identity_is_not_read_as_aliasing():
+    """Windows anonymous pipes report a zero identity; two distinct pipes tie.
+
+    Treating that tie as aliasing would send every diagnostic to the null device
+    on the normal Windows arrangement, losing the MuPDF messages this guard
+    exists to keep visible.
+    """
+    from arxiv_mcp_server.stdio_guard import _same_destination
+
+    class _Zero:
+        st_dev = 0
+        st_ino = 0
+
+    import os as _os
+
+    real_fstat = _os.fstat
+    try:
+        _os.fstat = lambda fd: _Zero()
+        assert _same_destination(1, 2) is False
+    finally:
+        _os.fstat = real_fstat

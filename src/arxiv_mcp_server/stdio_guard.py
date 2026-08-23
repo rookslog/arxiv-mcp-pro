@@ -99,6 +99,20 @@ def _same_destination(a: int, b: int) -> bool:
         sa, sb = os.fstat(a), os.fstat(b)
     except OSError:  # pragma: no cover - descriptor closed underneath us
         return False
+
+    # Windows gives anonymous pipes no filesystem identity — two independent
+    # pipes both report zero. Reading that as "aliased" would send every
+    # diagnostic to the null device on the normal Windows arrangement, losing
+    # exactly the MuPDF messages this guard exists to keep visible. Treat a
+    # zero identity as inconclusive and assume the descriptors are distinct.
+    #
+    # The consequence is honest and bounded: aliasing detection is verified on
+    # POSIX only. Under `2>&1` on Windows the guard degrades to what it was
+    # before this check existed. Closing that needs a Win32 handle-identity
+    # call (FILE_ID_INFO), which is untestable from here.
+    if (sa.st_dev, sa.st_ino) == (0, 0) or (sb.st_dev, sb.st_ino) == (0, 0):
+        return False
+
     return (sa.st_dev, sa.st_ino) == (sb.st_dev, sb.st_ino)
 
 
@@ -178,47 +192,84 @@ def protected_stdout() -> Iterator[TextIO]:
         # stderr IS the protocol channel; it cannot also be the sink.
         logger.debug("stdio guard: stderr aliases stdout; falling back to os.devnull")
         stderr_fd = None
+
     sink_fd: int | None = None
-    if stderr_fd is None:
-        sink_fd = os.open(os.devnull, os.O_WRONLY)
-
-    # Reserve the conventional stdout descriptor if the host has vacated it.
-    # Otherwise `os.dup` below, which hands out the lowest free number, would
-    # put the private protocol channel on fd 1 — precisely where raw writers
-    # and C extensions aim.
     reserved_stdout_fd = False
-    if stdout_fd != _STDOUT_FD and _is_free(_STDOUT_FD):
-        placeholder = os.open(os.devnull, os.O_WRONLY)
-        if placeholder != _STDOUT_FD:
-            os.dup2(placeholder, _STDOUT_FD)
-            os.close(placeholder)
-        reserved_stdout_fd = True
-        logger.debug("stdio guard: reserved vacant fd %d", _STDOUT_FD)
+    alias_saved_fd: int | None = None
+    protected_fd: int | None = None
+    protected: TextIO | None = None
+    wrapper_owns_fd = False
 
-    # 2. Private copy of the protocol channel, before anything else can touch it.
-    protected_fd = os.dup(stdout_fd)
-    protected: TextIO = io.TextIOWrapper(
-        io.FileIO(protected_fd, "wb", closefd=True),
-        encoding="utf-8",
-        newline="",
-        write_through=True,
-    )
+    # Descriptor acquisition is all-or-nothing. Without this, a failure partway
+    # through — EMFILE on the dup, say — would leave the host's fd 1 claimed by
+    # the null device and the sink leaked, with no `finally` yet in scope to
+    # release them, because the context never entered.
+    try:
+        if stderr_fd is None:
+            sink_fd = os.open(os.devnull, os.O_WRONLY)
+        sink = stderr_fd if stderr_fd is not None else sink_fd
 
-    # 3. fd 1 now refers to the diagnostic sink — stderr where it is usable,
-    #    the null device otherwise.
-    os.dup2(stderr_fd if stderr_fd is not None else sink_fd, stdout_fd)
-    _sync_win32_std_handle(stdout_fd)
+        if stdout_fd != _STDOUT_FD:
+            if _is_free(_STDOUT_FD):
+                # Reserve the conventional descriptor the host has vacated,
+                # so the `os.dup` below — which returns the lowest free number
+                # — cannot put the private protocol channel on fd 1, precisely
+                # where raw writers and C extensions aim.
+                placeholder = os.open(os.devnull, os.O_WRONLY)
+                if placeholder != _STDOUT_FD:
+                    os.dup2(placeholder, _STDOUT_FD)
+                    os.close(placeholder)
+                reserved_stdout_fd = True
+                logger.debug("stdio guard: reserved vacant fd %d", _STDOUT_FD)
+            elif _same_destination(_STDOUT_FD, stdout_fd):
+                # fd 1 is still open and still points at the protocol pipe, so
+                # diverting only the moved descriptor would leave raw writes to
+                # fd 1 — and anything reaching sys.__stdout__ — on the channel.
+                alias_saved_fd = os.dup(_STDOUT_FD)
+                os.dup2(sink, _STDOUT_FD)
+                logger.debug(
+                    "stdio guard: diverted fd %d aliasing the protocol", _STDOUT_FD
+                )
 
-    # 4. Python-level references follow suit, so print() is routed rather than
-    #    merely redirected — this keeps stdout and stderr a single ordered
-    #    stream. With no usable stderr there is nowhere better to send it than
-    #    the original object, which now writes to the diverted fd 1.
+        protected_fd = os.dup(stdout_fd)
+        protected = io.TextIOWrapper(
+            io.FileIO(protected_fd, "wb", closefd=True),
+            encoding="utf-8",
+            newline="",
+            write_through=True,
+        )
+        wrapper_owns_fd = True  # closing the wrapper now closes the descriptor
+
+        os.dup2(sink, stdout_fd)
+        _sync_win32_std_handle(stdout_fd)
+    except BaseException:
+        if protected is not None:
+            with contextlib.suppress(ValueError, OSError):
+                protected.close()
+        elif protected_fd is not None and not wrapper_owns_fd:
+            with contextlib.suppress(OSError):
+                os.close(protected_fd)
+        if alias_saved_fd is not None:
+            with contextlib.suppress(OSError):
+                os.dup2(alias_saved_fd, _STDOUT_FD)
+                os.close(alias_saved_fd)
+        if reserved_stdout_fd:
+            with contextlib.suppress(OSError):
+                os.close(_STDOUT_FD)
+        if sink_fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(sink_fd)
+        raise
+
+    # Python-level references follow suit, so print() is routed rather than
+    # merely redirected — this keeps stdout and stderr a single ordered stream.
+    # With no usable stderr there is nowhere better than the original object,
+    # which now writes to the diverted fd.
     if stderr_fd is not None:
         sys.stdout = sys.stderr
 
     logger.debug(
-        "stdio guard: protocol channel moved to private fd %d; fd %d diverted",
-        protected_fd,
+        "stdio guard: protocol channel moved off fd %d",
         stdout_fd,
     )
 
@@ -244,6 +295,10 @@ def protected_stdout() -> Iterator[TextIO]:
             if sink_fd is not None:
                 with contextlib.suppress(OSError):
                     os.close(sink_fd)
+            if alias_saved_fd is not None:
+                with contextlib.suppress(OSError):
+                    os.dup2(alias_saved_fd, _STDOUT_FD)
+                    os.close(alias_saved_fd)
             if reserved_stdout_fd:
                 with contextlib.suppress(OSError):
                     os.close(_STDOUT_FD)

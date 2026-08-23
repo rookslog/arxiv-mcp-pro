@@ -682,6 +682,10 @@ def test_an_interrupted_teardown_gives_the_host_its_stdout_back():
     assert "STDOUT_IS_BACK" not in result.stderr
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="ctypes.CDLL(None) is POSIX-only; Windows has no single process-wide CRT",
+)
 def test_an_interrupted_teardown_still_drains_the_other_buffers():
     """An interrupt in one drain must not leave another buffer full.
 

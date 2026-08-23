@@ -376,3 +376,116 @@ def test_inconclusive_descriptor_identity_is_not_read_as_aliasing():
         assert _same_destination(1, 2) is False
     finally:
         _os.fstat = real_fstat
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="ctypes.CDLL(None) is POSIX-only; Windows has no single process-wide CRT",
+)
+def test_c_runtime_buffered_output_never_reaches_the_channel():
+    """MuPDF prints through libc, and libc's buffer is invisible to Python.
+
+    ``TextIOWrapper.flush`` drains Python's buffer alone. Bytes a C extension
+    left in ``FILE *stdout`` survive the restore and land on JSON-RPC at the
+    next flush — which is the failure this whole module exists to prevent, one
+    layer lower than the Python-level cases above.
+    """
+    result = _run_child(r"""
+        import ctypes
+        libc = ctypes.CDLL(None)
+        with protected_stdout() as protocol:
+            libc.printf(b"C_BUFFERED_DIAGNOSTIC\n")   # deliberately not flushed
+            protocol.write('{"jsonrpc":"2.0","id":11}\n')
+            protocol.flush()
+        libc.fflush(None)                             # the host's own later flush
+        """)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == '{"jsonrpc":"2.0","id":11}\n'
+    assert "C_BUFFERED_DIAGNOSTIC" in result.stderr
+
+
+def test_the_guard_does_not_log_onto_the_channel_it_is_protecting():
+    """With `2>&1` and debug logging on, the guard's own records are the leak.
+
+    Every handler the guard could reach writes to fd 2, which in this
+    arrangement *is* the JSON-RPC pipe — and stays so for the whole session, so
+    deferring the record would not help either. Silence is the only safe
+    output.
+
+    Scoped to the guard's own records: import-time logging from ``mcp`` lands on
+    the same pipe before the guard runs at all, and is not this module's to fix.
+    """
+    script = textwrap.dedent(r"""
+        import logging, os, sys
+        logging.basicConfig(level=logging.DEBUG)
+        from arxiv_mcp_server.stdio_guard import protected_stdout
+        with protected_stdout() as protocol:
+            protocol.write('{"jsonrpc":"2.0","id":12}\n')
+            protocol.flush()
+        """)
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,  # the aliasing case
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert "arxiv_mcp_server.stdio_guard" not in result.stdout
+    assert result.stdout.endswith('{"jsonrpc":"2.0","id":12}\n')
+
+
+def test_descriptor_inheritability_survives_the_round_trip():
+    """`os.dup2` defaults to inheritable=True, so restoring can widen a host fd.
+
+    An embedding host that handed us a private stdout would find it inherited
+    by every later subprocess — the protocol channel leaking into unrelated
+    children, silently and permanently.
+    """
+    result = _run_child(r"""
+        moved = os.dup(1)                       # os.dup yields a private fd
+        sys.stdout = open(moved, "w", closefd=False)
+        before_moved = os.get_inheritable(moved)
+        before_one = os.get_inheritable(1)
+        with protected_stdout() as protocol:
+            protocol.write('{"jsonrpc":"2.0","id":13}\n')
+            protocol.flush()
+        print(f"moved {before_moved}->{os.get_inheritable(moved)}", file=sys.stderr)
+        print(f"one {before_one}->{os.get_inheritable(1)}", file=sys.stderr)
+        """)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == '{"jsonrpc":"2.0","id":13}\n'
+    assert "moved False->False" in result.stderr
+    assert "one True->True" in result.stderr
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32", reason="STD_OUTPUT_HANDLE exists only on Windows"
+)
+def test_the_win32_standard_output_handle_is_put_back():
+    """Cleanup must restore the handle the host had, not one derived from fd 1.
+
+    The Win32 slot is not a function of the descriptor table: a host that moved
+    stdout can legitimately have STD_OUTPUT_HANDLE pointing elsewhere again.
+    Repointing it at the restored descriptor redirects native code and every
+    subprocess for the rest of the process's life.
+    """
+    result = _run_child(r"""
+        import ctypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.GetStdHandle.restype = ctypes.c_void_p
+        k32.GetStdHandle.argtypes = (ctypes.c_int,)
+        before = k32.GetStdHandle(-11)
+        with protected_stdout() as protocol:
+            protocol.write('{"jsonrpc":"2.0","id":14}\n')
+            protocol.flush()
+        print(f"handle_restored={before == k32.GetStdHandle(-11)}", file=sys.stderr)
+        """)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == '{"jsonrpc":"2.0","id":14}\n'
+    assert "handle_restored=True" in result.stderr

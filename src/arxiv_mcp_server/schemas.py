@@ -90,4 +90,14 @@ def schema_from_model(model: Type[BaseModel]) -> Dict[str, Any]:
     else:
         schema["required"] = []
     schema["additionalProperties"] = raw.get("additionalProperties", False)
+
+    # A nested model, or anything else pydantic factors out, is emitted as a
+    # `$ref` into a top-level `$defs`. Rebuilding the schema from a fixed set
+    # of keys would drop that block and leave the reference dangling, which a
+    # client's validator cannot resolve — the tool would fail before its
+    # handler ever ran. No tool nests a model today; this keeps the first one
+    # that does from being broken on arrival.
+    for key in ("$defs", "definitions"):
+        if key in raw:
+            schema[key] = raw[key]
     return schema

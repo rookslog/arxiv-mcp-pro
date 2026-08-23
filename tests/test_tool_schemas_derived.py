@@ -114,3 +114,40 @@ def test_optional_fields_do_not_leak_pydantic_encoding():
         "type": "integer",
         "description": "d",
     }
+
+
+def test_nested_models_keep_their_definitions():
+    """A `$ref` must not outlive the `$defs` block it points at.
+
+    Pydantic factors a nested model into top-level `$defs` and leaves a
+    `$ref` behind. Dropping that block would leave a dangling reference a
+    client's validator cannot resolve, failing the call before the handler
+    runs. No tool nests a model today — this keeps the first one that does
+    from arriving broken.
+    """
+    from typing import Optional
+
+    from pydantic import BaseModel, Field
+
+    class Child(BaseModel):
+        a: int = Field(description="a")
+
+    class Parent(ToolInput):
+        child: Optional[Child] = Field(default=None, description="nested")
+
+    schema = schema_from_model(Parent)
+    ref = schema["properties"]["child"]["$ref"]
+
+    assert ref == "#/$defs/Child"
+    assert "$defs" in schema, "referenced definition was dropped"
+    assert schema["$defs"]["Child"]["properties"]["a"]["type"] == "integer"
+
+
+def test_flat_models_do_not_gain_an_empty_defs_block():
+    """The eleven real tools must keep the exact schema they already had."""
+    from pydantic import Field
+
+    class Flat(ToolInput):
+        a: int = Field(description="a")
+
+    assert "$defs" not in schema_from_model(Flat)

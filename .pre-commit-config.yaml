@@ -38,7 +38,7 @@ repos:
         # mode this whole project keeps hitting: a green signal measuring the
         # wrong thing. Observed 2026-08-23, when the dev checkout sat on a
         # feature branch and the gate silently validated it instead.
-        entry: bash -c 'root=$(git rev-parse --show-toplevel) && PYTHONPATH="$root/src${PYTHONPATH:+:$PYTHONPATH}" exec python -m pytest -q'
+        entry: python scripts/pytest_gate.py
         language: system
         pass_filenames: false
         always_run: true

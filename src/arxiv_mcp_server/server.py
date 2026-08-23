@@ -9,6 +9,7 @@ import json
 import logging
 from typing import Any, Dict, List
 
+import anyio
 import mcp.types as types
 import uvicorn
 from mcp.server import NotificationOptions, Server
@@ -19,6 +20,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.routing import Mount
 from .config import Settings
+from .stdio_guard import protected_stdout
 from .tools import (
     handle_search,
     handle_download,
@@ -182,9 +184,15 @@ def _transport_security_settings() -> TransportSecuritySettings:
 
 
 async def _run_stdio() -> None:
-    """Run the MCP server over stdio."""
-    async with stdio_server() as streams:
-        await server.run(streams[0], streams[1], _initialization_options())
+    """Run the MCP server over stdio.
+
+    stdout is the protocol channel, so it is moved to a private descriptor for
+    the lifetime of the session and restored afterwards; see
+    `stdio_guard.protected_stdout`.
+    """
+    with protected_stdout() as protocol_stream:
+        async with stdio_server(stdout=anyio.wrap_file(protocol_stream)) as streams:
+            await server.run(streams[0], streams[1], _initialization_options())
 
 
 async def _run_streamable_http() -> None:

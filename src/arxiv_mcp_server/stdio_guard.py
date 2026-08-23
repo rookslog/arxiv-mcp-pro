@@ -23,74 +23,140 @@ harm's way *at the file-descriptor level*:
 
 1. duplicate the original fd 1 to a private descriptor and hand that to the
    MCP transport, then
-2. point fd 1 itself at stderr.
+2. point fd 1 itself at stderr (or, when stderr is unusable, at the null
+   device).
 
 Step 2 is what makes this robust. It catches writes from C extensions
 (MuPDF is a C library) and from any reference to the original stdout object
 captured before this ran, neither of which a Python-level ``sys.stdout``
-reassignment would intercept. Diagnostics are not discarded — they land on
-stderr, where an MCP client and systemd both already collect them.
+reassignment would intercept. Where stderr is available, diagnostics are not
+discarded: they land there, and an MCP client and systemd both already collect
+it.
+
+The guard is a context manager because the redirect is process-global. A
+server embedded in a host process must get its stdout back when the session
+ends — otherwise the host's own output stays diverted, and a second session
+would duplicate the already-redirected descriptor and answer onto stderr.
 """
 
 from __future__ import annotations
 
+import contextlib
 import io
 import logging
 import os
 import sys
-from typing import TextIO
+from typing import Iterator, TextIO
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["protect_stdout"]
+__all__ = ["protected_stdout"]
+
+_STD_OUTPUT_HANDLE = -11
+_STDERR_FD = 2
 
 
 def _fileno_or_none(stream: object) -> int | None:
-    """Return a stream's file descriptor, or None if it does not have a real one."""
+    """Return a stream's *live* file descriptor, or None.
+
+    The liveness check matters. A stream object keeps reporting the descriptor
+    number it was built with even after that descriptor is closed, and the
+    number is then free to be handed to the next ``os.dup``. Trusting a stale
+    number is how a guard ends up copying the protocol channel onto fd 1, so
+    confirm the descriptor is actually open before believing it.
+    """
     try:
         fileno = stream.fileno()  # type: ignore[attr-defined]
     except (AttributeError, io.UnsupportedOperation, ValueError, OSError):
         return None
-    return fileno if isinstance(fileno, int) and fileno >= 0 else None
+    if not isinstance(fileno, int) or fileno < 0:
+        return None
+    try:
+        os.fstat(fileno)
+    except OSError:
+        return None
+    return fileno
 
 
-def protect_stdout() -> TextIO:
-    """Move the JSON-RPC channel off fd 1 and redirect fd 1 to stderr.
+def _sync_win32_std_handle(stdout_fd: int) -> None:
+    """Repoint the Win32 STD_OUTPUT_HANDLE slot at whatever fd 1 now refers to.
 
-    Returns the stream the MCP transport must write to. After this call,
+    ``os.dup2`` rewrites the C runtime descriptor table but leaves the Win32
+    standard-handle slot alone. Native code and subprocesses that reach stdout
+    through ``GetStdHandle`` would otherwise keep writing to the original
+    JSON-RPC pipe. Best effort: a failure here costs the Win32-level half of
+    the guard, not the CRT-level half, so it is logged rather than raised.
+    """
+    if sys.platform != "win32":  # pragma: no cover - platform-specific
+        return
+    try:  # pragma: no cover - exercised only on Windows
+        import ctypes
+        import msvcrt
+
+        handle = msvcrt.get_osfhandle(stdout_fd)
+        if not ctypes.windll.kernel32.SetStdHandle(_STD_OUTPUT_HANDLE, handle):
+            raise OSError(ctypes.get_last_error())
+    except Exception as exc:  # pragma: no cover - never fatal
+        logger.debug("stdio guard: could not repoint STD_OUTPUT_HANDLE: %r", exc)
+
+
+@contextlib.contextmanager
+def protected_stdout() -> Iterator[TextIO]:
+    """Move the JSON-RPC channel off fd 1 for the duration of the block.
+
+    Yields the stream the MCP transport must write to. Inside the block,
     ``print()``, ``sys.stdout.write()``, and C-level writes to fd 1 all go to
-    stderr and can no longer corrupt the protocol.
+    stderr — or to the null device when stderr has no descriptor of its own —
+    and can no longer corrupt the protocol. On exit fd 1 and ``sys.stdout`` are
+    both restored, so an embedding host gets its stdout back.
 
-    Degrades safely: when stdout or stderr has no real file descriptor — under
-    pytest capture, or when the server is embedded in a host process — the
-    descriptor swap is skipped and only the Python-level redirect is applied.
-    The returned stream is always the correct one to write protocol bytes to.
+    Degrades safely when stdout has no real file descriptor (pytest capture, or
+    an embedding host that replaced the object): the descriptor swap is skipped
+    and only the Python-level redirect is applied. The yielded stream is always
+    the correct one to write protocol bytes to.
     """
     original_stdout: TextIO = sys.stdout
-
     stdout_fd = _fileno_or_none(original_stdout)
-    stderr_fd = _fileno_or_none(sys.stderr)
 
-    if stdout_fd is None or stderr_fd is None:
-        # No real descriptors to juggle. Do what we can at the Python level so
-        # that print() still cannot reach the protocol stream.
+    if stdout_fd is None:
+        # Nothing to juggle at the descriptor level. Do what we can so that
+        # print() still cannot reach the protocol stream.
         sys.stdout = sys.stderr
-        logger.debug(
-            "stdio guard: no usable file descriptors; applied Python-level redirect only"
-        )
-        return original_stdout
+        logger.debug("stdio guard: no stdout descriptor; Python-level redirect only")
+        try:
+            yield original_stdout
+        finally:
+            sys.stdout = original_stdout
+        return
 
     try:
         original_stdout.flush()
     except (ValueError, OSError):  # pragma: no cover - already-closed stream
         pass
 
-    # 1. Private copy of the protocol channel, before anything else can touch it.
+    # 1. Settle where diagnostics will go BEFORE duplicating anything. Order is
+    #    load-bearing: os.dup hands out the lowest free descriptor, so a closed
+    #    stderr would have its number reclaimed by the protocol channel below,
+    #    and a later check against the stale number would divert fd 1 onto the
+    #    protocol itself.
+    stderr_fd = _fileno_or_none(sys.stderr)
+    repaired_stderr = False
+    if stderr_fd is None:
+        # Give stderr a real descriptor again so both stale references and the
+        # diverted fd 1 land somewhere harmless instead of on the protocol.
+        # Diagnostics are lost in this case; an intact protocol wins.
+        null_fd = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(null_fd, _STDERR_FD)
+        finally:
+            if null_fd != _STDERR_FD:
+                os.close(null_fd)
+        stderr_fd = _STDERR_FD
+        repaired_stderr = True
+        logger.debug("stdio guard: stderr unusable; pointed fd 2 at os.devnull")
+
+    # 2. Private copy of the protocol channel, before anything else can touch it.
     protected_fd = os.dup(stdout_fd)
-
-    # 2. Anything that writes to fd 1 from here on lands on stderr instead.
-    os.dup2(stderr_fd, stdout_fd)
-
     protected: TextIO = io.TextIOWrapper(
         io.FileIO(protected_fd, "wb", closefd=True),
         encoding="utf-8",
@@ -98,13 +164,39 @@ def protect_stdout() -> TextIO:
         write_through=True,
     )
 
-    # 3. Python-level references follow suit, so `print()` is routed rather than
-    #    merely redirected — this keeps stdout and stderr a single ordered stream.
+    # 3. fd 1 now refers to whatever stderr refers to.
+    os.dup2(stderr_fd, stdout_fd)
+    _sync_win32_std_handle(stdout_fd)
+
+    # 4. Python-level references follow suit, so print() is routed rather than
+    #    merely redirected — this keeps stdout and stderr a single ordered
+    #    stream.
     sys.stdout = sys.stderr
 
     logger.debug(
-        "stdio guard: protocol channel moved to private fd %d; fd %d now points at stderr",
+        "stdio guard: protocol channel moved to private fd %d; fd %d diverted",
         protected_fd,
         stdout_fd,
     )
-    return protected
+
+    try:
+        yield protected
+    finally:
+        # Restore fd 1 from the private copy before closing it, so an embedding
+        # host and any later session get an intact stdout back.
+        try:
+            protected.flush()
+        except (ValueError, OSError):  # pragma: no cover - already-closed stream
+            pass
+        try:
+            os.dup2(protected_fd, stdout_fd)
+            _sync_win32_std_handle(stdout_fd)
+        except OSError as exc:  # pragma: no cover - descriptor already reclaimed
+            logger.debug("stdio guard: could not restore fd %d: %r", stdout_fd, exc)
+        finally:
+            sys.stdout = original_stdout
+            if repaired_stderr:
+                with contextlib.suppress(OSError):
+                    os.close(_STDERR_FD)
+            with contextlib.suppress(ValueError, OSError):
+                protected.close()

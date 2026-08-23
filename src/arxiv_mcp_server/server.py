@@ -20,7 +20,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.routing import Mount
 from .config import Settings
-from .stdio_guard import protect_stdout
+from .stdio_guard import protected_stdout
 from .tools import (
     handle_search,
     handle_download,
@@ -186,12 +186,13 @@ def _transport_security_settings() -> TransportSecuritySettings:
 async def _run_stdio() -> None:
     """Run the MCP server over stdio.
 
-    stdout is the protocol channel, so it is moved to a private descriptor
-    before the transport starts; see `stdio_guard.protect_stdout`.
+    stdout is the protocol channel, so it is moved to a private descriptor for
+    the lifetime of the session and restored afterwards; see
+    `stdio_guard.protected_stdout`.
     """
-    protected_stdout = protect_stdout()
-    async with stdio_server(stdout=anyio.wrap_file(protected_stdout)) as streams:
-        await server.run(streams[0], streams[1], _initialization_options())
+    with protected_stdout() as protocol_stream:
+        async with stdio_server(stdout=anyio.wrap_file(protocol_stream)) as streams:
+            await server.run(streams[0], streams[1], _initialization_options())
 
 
 async def _run_streamable_http() -> None:

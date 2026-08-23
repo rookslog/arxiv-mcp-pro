@@ -21,6 +21,25 @@ All notable changes to this project are documented here. The format is based on
   `pip install arxiv-mcp-pro` produced a server that could not start. Pinned to
   `mcp>=1.27.0,<2` pending a deliberate 2.0 migration.
 
+- **stdio transport: stray writes to stdout no longer corrupt the JSON-RPC
+  channel and kill the server.** Under the stdio transport, fd 1 *is* the
+  protocol channel. PyMuPDF (pulled in by the `pdf` extra via `pymupdf4llm`)
+  binds `sys.stdout` at import time and prints MuPDF diagnostics through it, so
+  a single malformed-PDF warning injected non-JSON bytes mid-stream. The client
+  failed to decode, the session desynchronised, and the server died of the
+  resulting `BrokenPipeError`. Observed in the field three times against an
+  OpenAI Secure MCP Tunnel deployment: the tunnel logged `invalid character '='
+  looking for beginning of value`, then `stdio MCP command exited`, then served
+  HTTP 502 on every subsequent `initialize` — for 16 days, because the tunnel
+  process itself stayed up and its health endpoints kept returning 200.
+
+  `_run_stdio` now calls `stdio_guard.protect_stdout()` first, which duplicates
+  fd 1 to a private descriptor for the transport and points fd 1 at stderr. The
+  redirect is at the descriptor level, so it also covers C-extension writes
+  (MuPDF is a C library) and references to stdout captured before startup —
+  neither of which a `sys.stdout` reassignment would intercept. Diagnostics are
+  redirected, not discarded: they land on stderr.
+
 ## [0.8.0] - 2026-07-17
 
 Repo polish after the v0.7.0 PyPI release, plus reliability/ergonomics fixes

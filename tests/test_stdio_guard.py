@@ -143,6 +143,48 @@ def test_fd_one_is_diverted_even_when_stderr_has_no_descriptor():
     assert "MUST_NOT_APPEAR" not in result.stdout
 
 
+def test_a_live_fd_two_survives_a_replaced_sys_stderr():
+    """A host may swap sys.stderr for an object with no fileno while fd 2 lives.
+
+    The guard must not treat that as proof descriptor 2 is dead: clobbering it
+    and closing it on the way out would destroy a descriptor the guard does not
+    own, leaving the host's stderr permanently EBADF.
+    """
+    result = _run_child(r"""
+        import io
+        sys.stderr = io.StringIO()          # fd 2 is still perfectly alive
+        with protected_stdout() as protocol:
+            protocol.write("PROTOCOL\n"); protocol.flush()
+        os.write(2, b"HOST_STDERR_STILL_WORKS\n")
+        """)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "PROTOCOL\n"
+    assert "HOST_STDERR_STILL_WORKS" in result.stderr
+
+
+def test_buffered_writes_to_a_captured_stdout_never_reach_the_channel():
+    """Unflushed diagnostics must not land on the protocol after restoration.
+
+    A library holding a pre-guard stdout reference may write without flushing —
+    normal when stdout is a pipe. Those bytes sit in the wrapper's buffer; if
+    the guard restores fd 1 before flushing it, a later flush empties them
+    straight onto the JSON-RPC channel.
+    """
+    result = _run_child(r"""
+        captured = sys.stdout
+        with protected_stdout() as protocol:
+            print("BUFFERED_STRAY", file=captured)     # deliberately not flushed
+            protocol.write('{"jsonrpc":"2.0","id":9}\n')
+            protocol.flush()
+        captured.flush()                                # after fd 1 is restored
+        """)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == '{"jsonrpc":"2.0","id":9}\n'
+    assert "BUFFERED_STRAY" in result.stderr
+
+
 def test_degrades_safely_without_a_stdout_descriptor(monkeypatch):
     """Under capture or embedding, fall back to the Python-level redirect."""
 

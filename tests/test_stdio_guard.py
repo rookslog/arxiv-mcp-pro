@@ -497,3 +497,29 @@ def test_the_win32_standard_output_handle_is_put_back():
     assert result.returncode == 0, result.stderr
     assert result.stdout == '{"jsonrpc":"2.0","id":14}\n'
     assert "handle_restored=True" in result.stderr
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="ctypes.CDLL(None) is POSIX-only; Windows has no single process-wide CRT",
+)
+def test_native_output_buffered_before_the_guard_never_reaches_the_channel():
+    """Under stdio, fd 1 is the protocol channel from process start.
+
+    The server imports its tools before opening a session, and the pdf tool
+    pulls in PyMuPDF — so a C-buffered diagnostic can already exist when the
+    guard runs. Draining libc at entry, while fd 1 is still the channel, would
+    make the guard cause the very corruption it exists to prevent.
+    """
+    result = _run_child(r"""
+        import ctypes
+        libc = ctypes.CDLL(None)
+        libc.printf(b"PRE_GUARD_C_DIAGNOSTIC\n")   # buffered before the guard
+        with protected_stdout() as protocol:
+            protocol.write('{"jsonrpc":"2.0","id":15}\n')
+            protocol.flush()
+        """)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == '{"jsonrpc":"2.0","id":15}\n'
+    assert "PRE_GUARD_C_DIAGNOSTIC" in result.stderr

@@ -58,6 +58,12 @@ _STDOUT_FD = 1
 _libc: Any = None
 _libc_resolved = False
 
+# Distinct from None, which is a *legitimate* STD_OUTPUT_HANDLE value meaning
+# the host has no standard-output handle at all. Conflating "could not read it"
+# with "read it, and it was NULL" would hand a host a handle on the way out
+# that it never had.
+_HANDLE_UNAVAILABLE = object()
+
 
 def _fileno_or_none(stream: object) -> int | None:
     """Return a stream's *live* file descriptor, or None.
@@ -195,22 +201,27 @@ def _win32_kernel32() -> Any:  # pragma: no cover - platform-specific
     return k32
 
 
-def _win32_stdout_handle(*, quiet: bool = False) -> int | None:
-    """The process's current STD_OUTPUT_HANDLE, or None off Windows/on failure."""
+def _win32_stdout_handle(*, quiet: bool = False) -> Any:
+    """The process's current STD_OUTPUT_HANDLE.
+
+    Returns `_HANDLE_UNAVAILABLE` when the value could not be read, which is
+    not the same as reading it and finding NULL — a host may legitimately have
+    no standard-output handle, and `ctypes` reports that as `None`.
+    """
     if sys.platform != "win32":
-        return None
+        return _HANDLE_UNAVAILABLE
     try:  # pragma: no cover - exercised only on Windows
         return _win32_kernel32().GetStdHandle(_STD_OUTPUT_HANDLE)
     except Exception as exc:  # pragma: no cover - never fatal
         if not quiet:
             logger.debug("stdio guard: could not read STD_OUTPUT_HANDLE: %r", exc)
-        return None
+        return _HANDLE_UNAVAILABLE
 
 
-def _win32_handle_for_fd(fd: int, *, quiet: bool = False) -> int | None:
-    """The Win32 handle backing *fd*, or None off Windows/on failure."""
+def _win32_handle_for_fd(fd: int, *, quiet: bool = False) -> Any:
+    """The Win32 handle backing *fd*, or `_HANDLE_UNAVAILABLE`."""
     if sys.platform != "win32":
-        return None
+        return _HANDLE_UNAVAILABLE
     try:  # pragma: no cover - exercised only on Windows
         import msvcrt
 
@@ -218,11 +229,15 @@ def _win32_handle_for_fd(fd: int, *, quiet: bool = False) -> int | None:
     except Exception as exc:  # pragma: no cover - never fatal
         if not quiet:
             logger.debug("stdio guard: no handle for fd %d: %r", fd, exc)
-        return None
+        return _HANDLE_UNAVAILABLE
 
 
-def _win32_set_stdout_handle(handle: int | None, *, quiet: bool = False) -> None:
+def _win32_set_stdout_handle(handle: Any, *, quiet: bool = False) -> None:
     """Point the Win32 STD_OUTPUT_HANDLE slot at *handle*.
+
+    `None` is a value, not an absence: it sets the slot to NULL, which is what
+    restoring a host that had no standard-output handle requires.
+    `_HANDLE_UNAVAILABLE` is the absence, and does nothing.
 
     ``os.dup2`` rewrites the C runtime descriptor table but leaves this slot
     alone. Native code and subprocesses that reach stdout through
@@ -230,7 +245,7 @@ def _win32_set_stdout_handle(handle: int | None, *, quiet: bool = False) -> None
     pipe. Best effort: a failure here costs the Win32-level half of the guard,
     not the CRT-level half, so it is logged rather than raised.
     """
-    if sys.platform != "win32" or handle is None:
+    if sys.platform != "win32" or handle is _HANDLE_UNAVAILABLE:
         return
     try:  # pragma: no cover - exercised only on Windows
         import ctypes
@@ -302,16 +317,23 @@ def protected_stdout() -> Iterator[TextIO]:
             return
         logger.debug(message, *args)
 
-    # Flush what is already buffered while fd 1 still points at the host's real
-    # stdout. These bytes were written before the guard existed, so they are the
-    # host's own output and belong there — deferring the flush past the
-    # diversion would silently redirect legitimate output into the sink, and a
-    # write between two sessions would vanish. Both buffers matter: Python's
-    # wrapper, and the C runtime's, which holds anything a native extension
-    # printed.
+    # Flush Python's buffer while fd 1 still points at the host's real stdout.
+    # These bytes were written before the guard existed, so they are the host's
+    # own output and belong there — deferring this past the diversion would
+    # silently redirect legitimate output into the sink, and a write between two
+    # sessions would vanish.
+    #
+    # The C runtime's buffer is deliberately NOT drained here, and the asymmetry
+    # is the whole point. Under the stdio transport fd 1 is the protocol channel
+    # from process start, and a native extension imported before this ran — the
+    # server imports its tools, and the pdf tool pulls in PyMuPDF — may already
+    # have a diagnostic sitting in libc's buffer. Flushing it now would push it
+    # straight onto JSON-RPC, the guard causing the exact corruption it exists
+    # to prevent. It is drained below instead, once the sink is in place.
+    # Python's layer needs no such care: pymupdf prints with `flush=1`, so
+    # nothing accumulates there to begin with.
     with contextlib.suppress(ValueError, OSError):
         original_stdout.flush()
-    _flush_c_stdio(quiet=stderr_is_protocol)
 
     if stderr_is_protocol:
         # stderr IS the protocol channel; it cannot also be the sink.
@@ -382,6 +404,11 @@ def protected_stdout() -> Iterator[TextIO]:
             _win32_handle_for_fd(stdout_fd, quiet=stderr_is_protocol),
             quiet=stderr_is_protocol,
         )
+        # Now that fd 1 lands in the sink, it is safe to drain whatever a native
+        # extension buffered before the guard existed. Doing it here rather than
+        # at teardown also means an operator watching stderr sees the diagnostic
+        # near when it happened, not at session end.
+        _flush_c_stdio(quiet=stderr_is_protocol)
     except BaseException:
         if protected is not None:
             with contextlib.suppress(ValueError, OSError):
@@ -434,7 +461,7 @@ def protected_stdout() -> Iterator[TextIO]:
             _win32_set_stdout_handle(
                 (
                     original_win32_stdout
-                    if original_win32_stdout is not None
+                    if original_win32_stdout is not _HANDLE_UNAVAILABLE
                     else _win32_handle_for_fd(stdout_fd, quiet=stderr_is_protocol)
                 ),
                 quiet=stderr_is_protocol,

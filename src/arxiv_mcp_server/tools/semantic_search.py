@@ -21,6 +21,7 @@ from ..schemas import ToolInput, schema_from_model
 from ..config import Settings
 from .arxiv_pacing import pace_arxiv_request_sync, record_arxiv_request
 from .list_papers import is_valid_arxiv_id
+from ..paper_storage import paper_id_from_stem
 
 try:
     import numpy as np
@@ -394,9 +395,9 @@ def rebuild_index(clear_existing: bool = True) -> Dict[str, Any]:
         return {"status": "error", "message": dependency_error}
 
     paper_ids = sorted(
-        p.stem
+        paper_id_from_stem(p.stem)
         for p in Path(settings.STORAGE_PATH).glob("*.md")
-        if is_valid_arxiv_id(p.stem)
+        if is_valid_arxiv_id(paper_id_from_stem(p.stem))
     )
 
     if clear_existing:

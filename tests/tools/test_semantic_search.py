@@ -364,6 +364,9 @@ async def test_reindex_uses_local_markdown_ids(
     """Reindex should walk local markdown files and attempt indexing each ID."""
     Path(temp_storage_path, "2301.00001.md").write_text("paper", encoding="utf-8")
     Path(temp_storage_path, "2301.00002.md").write_text("paper", encoding="utf-8")
+    Path(temp_storage_path, "hep-th%2F9901001.md").write_text(
+        "legacy paper", encoding="utf-8"
+    )
 
     indexed_ids = []
 
@@ -377,7 +380,11 @@ async def test_reindex_uses_local_markdown_ids(
 
     payload = json.loads(response[0].text)
     assert payload["status"] == "success"
-    assert set(indexed_ids) == {"2301.00001", "2301.00002"}
+    assert set(indexed_ids) == {
+        "2301.00001",
+        "2301.00002",
+        "hep-th/9901001",
+    }
 
 
 @pytest.mark.asyncio

@@ -9,6 +9,7 @@ import mcp.types as types
 from mcp.types import ToolAnnotations
 from ..schemas import ToolInput, schema_from_model
 from ..config import Settings
+from ..paper_storage import paper_id_from_stem
 
 settings = Settings()
 
@@ -16,7 +17,8 @@ settings = Settings()
 # with optional version suffix (v1, v2, …).
 _ARXIV_ID_RE = re.compile(
     r"^(\d{4}\.\d{4,5}(v\d+)?"  # new-style: 2404.18922 or 2404.18922v3
-    r"|[a-z\-]+(/[a-z\-]+)?/\d{7}(v\d+)?)$",  # old-style: hep-ph/9901234
+    # The archive may carry a subject class: math.GT/0309136, cs.AI/9901001.
+    r"|[a-z\-]+(\.[a-z\-]+)?(/[a-z\-]+)?/\d{7}(v\d+)?)\Z",  # old: hep-ph/9901234
     re.IGNORECASE,
 )
 
@@ -55,11 +57,12 @@ def list_papers() -> list[str]:
     storage = Path(settings.STORAGE_PATH)
     if not storage.exists():
         return []
-    return [
-        p.stem
+    paper_ids = [
+        paper_id_from_stem(p.stem)
         for p in storage.iterdir()
-        if p.is_file() and p.suffix == ".md" and is_valid_arxiv_id(p.stem)
+        if p.is_file() and p.suffix == ".md"
     ]
+    return [paper_id for paper_id in paper_ids if is_valid_arxiv_id(paper_id)]
 
 
 async def handle_list_papers(

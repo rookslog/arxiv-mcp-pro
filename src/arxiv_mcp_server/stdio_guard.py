@@ -53,7 +53,6 @@ logger = logging.getLogger(__name__)
 __all__ = ["protected_stdout"]
 
 _STD_OUTPUT_HANDLE = -11
-_STDERR_FD = 2
 
 
 def _fileno_or_none(stream: object) -> int | None:
@@ -138,22 +137,19 @@ def protected_stdout() -> Iterator[TextIO]:
     #    load-bearing: os.dup hands out the lowest free descriptor, so a closed
     #    stderr would have its number reclaimed by the protocol channel below,
     #    and a later check against the stale number would divert fd 1 onto the
-    #    protocol itself.
+    #    protocol itself. Opening the fallback sink first also means that when
+    #    fd 2 *is* free, the sink claims it rather than the protocol.
+    #
+    #    Note what this deliberately does NOT do: `sys.stderr` having no
+    #    usable fileno does not prove descriptor 2 is dead. A host that swaps
+    #    in an io.StringIO leaves fd 2 perfectly alive, and clobbering it —
+    #    then closing it on the way out — would destroy a descriptor this
+    #    guard does not own. The sink is only ever used as a dup2 *source*.
     stderr_fd = _fileno_or_none(sys.stderr)
-    repaired_stderr = False
+    sink_fd: int | None = None
     if stderr_fd is None:
-        # Give stderr a real descriptor again so both stale references and the
-        # diverted fd 1 land somewhere harmless instead of on the protocol.
-        # Diagnostics are lost in this case; an intact protocol wins.
-        null_fd = os.open(os.devnull, os.O_WRONLY)
-        try:
-            os.dup2(null_fd, _STDERR_FD)
-        finally:
-            if null_fd != _STDERR_FD:
-                os.close(null_fd)
-        stderr_fd = _STDERR_FD
-        repaired_stderr = True
-        logger.debug("stdio guard: stderr unusable; pointed fd 2 at os.devnull")
+        sink_fd = os.open(os.devnull, os.O_WRONLY)
+        logger.debug("stdio guard: stderr unusable; diverting fd 1 to os.devnull")
 
     # 2. Private copy of the protocol channel, before anything else can touch it.
     protected_fd = os.dup(stdout_fd)
@@ -164,14 +160,17 @@ def protected_stdout() -> Iterator[TextIO]:
         write_through=True,
     )
 
-    # 3. fd 1 now refers to whatever stderr refers to.
-    os.dup2(stderr_fd, stdout_fd)
+    # 3. fd 1 now refers to the diagnostic sink — stderr where it is usable,
+    #    the null device otherwise.
+    os.dup2(stderr_fd if stderr_fd is not None else sink_fd, stdout_fd)
     _sync_win32_std_handle(stdout_fd)
 
     # 4. Python-level references follow suit, so print() is routed rather than
     #    merely redirected — this keeps stdout and stderr a single ordered
-    #    stream.
-    sys.stdout = sys.stderr
+    #    stream. With no usable stderr there is nowhere better to send it than
+    #    the original object, which now writes to the diverted fd 1.
+    if stderr_fd is not None:
+        sys.stdout = sys.stderr
 
     logger.debug(
         "stdio guard: protocol channel moved to private fd %d; fd %d diverted",
@@ -182,12 +181,15 @@ def protected_stdout() -> Iterator[TextIO]:
     try:
         yield protected
     finally:
-        # Restore fd 1 from the private copy before closing it, so an embedding
-        # host and any later session get an intact stdout back.
-        try:
+        # Order matters here too. A library holding a pre-guard reference to
+        # stdout may have written without flushing — normal when stdout is a
+        # pipe — leaving diagnostics sitting in that wrapper's buffer. Flush it
+        # while fd 1 still points at the sink; flushing after the restore would
+        # empty those bytes straight onto the JSON-RPC channel.
+        with contextlib.suppress(ValueError, OSError):
+            original_stdout.flush()
+        with contextlib.suppress(ValueError, OSError):
             protected.flush()
-        except (ValueError, OSError):  # pragma: no cover - already-closed stream
-            pass
         try:
             os.dup2(protected_fd, stdout_fd)
             _sync_win32_std_handle(stdout_fd)
@@ -195,8 +197,8 @@ def protected_stdout() -> Iterator[TextIO]:
             logger.debug("stdio guard: could not restore fd %d: %r", stdout_fd, exc)
         finally:
             sys.stdout = original_stdout
-            if repaired_stderr:
+            if sink_fd is not None:
                 with contextlib.suppress(OSError):
-                    os.close(_STDERR_FD)
+                    os.close(sink_fd)
             with contextlib.suppress(ValueError, OSError):
                 protected.close()

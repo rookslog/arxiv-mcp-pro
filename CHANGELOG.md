@@ -10,6 +10,15 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **The claim-ledger gate no longer grades unrelated tables as claims.** Its
+  Markdown parser collected every pipe-prefixed line in the file, so any table
+  appearing after the ledger was spliced onto it and its cells were checked
+  against the ledger's header. A two-column table surfaced as claims missing
+  their label and locator. The table now ends at the first line that is not a
+  row.
+
 ### Changed
 
 - **Tool input schemas are now generated from pydantic models instead of being

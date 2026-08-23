@@ -133,6 +133,9 @@ packages = ["src/arxiv_mcp_server"]
 include = [
     "/src/arxiv_mcp_server",
     "/tests",
+    # `/tests/scripts/` imports from here, so shipping the tests without it
+    # gives downstream packagers a collection error, not a test run.
+    "/scripts",
     "/README.md",
     "/LICENSE",
     "/CHANGELOG.md",

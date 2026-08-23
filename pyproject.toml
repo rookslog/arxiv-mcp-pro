@@ -36,7 +36,7 @@ maintainers = [
 # clean install. arxiv is pinned <3: 4.x swaps feedparser for lxml (~20 MB
 # compiled) and has never been what uv.lock tests against (2.4.0).
 dependencies = [
-    "arxiv>=2.1.0,<3",
+    "arxiv>=2.1.0,<5",
     "httpx>=0.24.0",
     "python-dateutil>=2.8.2",
     "pydantic>=2.8.0",

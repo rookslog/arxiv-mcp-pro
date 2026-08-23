@@ -236,3 +236,74 @@ async def test_run_stdio_hands_the_protected_stream_to_the_transport():
     wrap.assert_called_once_with(protected)
     stdio_server.assert_called_once_with(stdout=wrapped)
     run.assert_awaited_once()
+
+
+def test_stdout_is_diverted_when_stderr_is_the_same_pipe():
+    """`2>&1` must not turn the guard into a silent no-op.
+
+    Merging stderr into stdout is an ordinary way to launch a process. If the
+    guard diverts fd 1 onto stderr in that case, it diverts the protocol channel
+    onto itself: every diagnostic still lands on JSON-RPC while the guard looks
+    installed.
+    """
+    script = textwrap.dedent(r"""
+        import os, sys
+        from arxiv_mcp_server.stdio_guard import protected_stdout
+        with protected_stdout() as protocol:
+            print("STRAY_WITH_MERGED_STDERR")
+            os.write(1, b"RAW_WITH_MERGED_STDERR\n")
+            protocol.write('{"jsonrpc":"2.0","id":7}\n')
+            protocol.flush()
+        """)
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,  # the aliasing case
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert result.stdout == '{"jsonrpc":"2.0","id":7}\n'
+
+
+def test_a_vacated_fd_one_is_not_handed_to_the_protocol():
+    """If the host moved stdout and closed fd 1, the protocol must not land there.
+
+    `os.dup` returns the lowest free descriptor, so a vacant fd 1 would become
+    the private protocol channel — exactly where raw writers and C extensions
+    aim, reintroducing the corruption the guard exists to prevent.
+    """
+    result = _run_child(r"""
+        moved = os.dup(1)                       # keep the real stdout alive
+        os.close(1)                             # ...and vacate fd 1
+        sys.stdout = os.fdopen(moved, "w")
+        with protected_stdout() as protocol:
+            os.write(1, b"RAW_TO_CONVENTIONAL_FD\n")
+            protocol.write('{"jsonrpc":"2.0","id":8}\n')
+            protocol.flush()
+        """)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == '{"jsonrpc":"2.0","id":8}\n'
+
+
+def test_host_output_between_sessions_reaches_real_stdout():
+    """Buffered host output must not be swept into the diagnostic sink.
+
+    Bytes written to stdout outside the guard are the host's own output. A
+    later session must not flush that buffer after diverting fd 1, or writes
+    made between two sessions silently vanish into stderr.
+    """
+    result = _run_child(r"""
+        with protected_stdout() as protocol:
+            protocol.write("FIRST\n"); protocol.flush()
+        print("BETWEEN_SESSIONS")               # buffered, not yet flushed
+        with protected_stdout() as protocol:
+            protocol.write("SECOND\n"); protocol.flush()
+        """)
+
+    assert result.returncode == 0, result.stderr
+    assert "BETWEEN_SESSIONS" in result.stdout
+    assert "BETWEEN_SESSIONS" not in result.stderr

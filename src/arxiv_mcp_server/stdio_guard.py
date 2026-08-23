@@ -53,6 +53,7 @@ logger = logging.getLogger(__name__)
 __all__ = ["protected_stdout"]
 
 _STD_OUTPUT_HANDLE = -11
+_STDOUT_FD = 1
 
 
 def _fileno_or_none(stream: object) -> int | None:
@@ -75,6 +76,30 @@ def _fileno_or_none(stream: object) -> int | None:
     except OSError:
         return None
     return fileno
+
+
+def _is_free(fd: int) -> bool:
+    """True when *fd* is not currently open."""
+    try:
+        os.fstat(fd)
+    except OSError:
+        return True
+    return False
+
+
+def _same_destination(a: int, b: int) -> bool:
+    """True when two descriptors refer to the same open file.
+
+    `2>&1` and `stderr=subprocess.STDOUT` are ordinary ways to launch a
+    process, and both leave stderr pointing at the very pipe carrying JSON-RPC.
+    Diverting stdout onto stderr would then be a no-op — the guard would look
+    installed and protect nothing.
+    """
+    try:
+        sa, sb = os.fstat(a), os.fstat(b)
+    except OSError:  # pragma: no cover - descriptor closed underneath us
+        return False
+    return (sa.st_dev, sa.st_ino) == (sb.st_dev, sb.st_ino)
 
 
 def _sync_win32_std_handle(stdout_fd: int) -> None:
@@ -128,11 +153,6 @@ def protected_stdout() -> Iterator[TextIO]:
             sys.stdout = original_stdout
         return
 
-    try:
-        original_stdout.flush()
-    except (ValueError, OSError):  # pragma: no cover - already-closed stream
-        pass
-
     # 1. Settle where diagnostics will go BEFORE duplicating anything. Order is
     #    load-bearing: os.dup hands out the lowest free descriptor, so a closed
     #    stderr would have its number reclaimed by the protocol channel below,
@@ -145,11 +165,35 @@ def protected_stdout() -> Iterator[TextIO]:
     #    in an io.StringIO leaves fd 2 perfectly alive, and clobbering it —
     #    then closing it on the way out — would destroy a descriptor this
     #    guard does not own. The sink is only ever used as a dup2 *source*.
+    # Flush what is already buffered while fd 1 still points at the host's real
+    # stdout. These bytes were written before the guard existed, so they are the
+    # host's own output and belong there — deferring the flush past the
+    # diversion would silently redirect legitimate output into the sink, and a
+    # write between two sessions would vanish.
+    with contextlib.suppress(ValueError, OSError):
+        original_stdout.flush()
+
     stderr_fd = _fileno_or_none(sys.stderr)
+    if stderr_fd is not None and _same_destination(stderr_fd, stdout_fd):
+        # stderr IS the protocol channel; it cannot also be the sink.
+        logger.debug("stdio guard: stderr aliases stdout; falling back to os.devnull")
+        stderr_fd = None
     sink_fd: int | None = None
     if stderr_fd is None:
         sink_fd = os.open(os.devnull, os.O_WRONLY)
-        logger.debug("stdio guard: stderr unusable; diverting fd 1 to os.devnull")
+
+    # Reserve the conventional stdout descriptor if the host has vacated it.
+    # Otherwise `os.dup` below, which hands out the lowest free number, would
+    # put the private protocol channel on fd 1 — precisely where raw writers
+    # and C extensions aim.
+    reserved_stdout_fd = False
+    if stdout_fd != _STDOUT_FD and _is_free(_STDOUT_FD):
+        placeholder = os.open(os.devnull, os.O_WRONLY)
+        if placeholder != _STDOUT_FD:
+            os.dup2(placeholder, _STDOUT_FD)
+            os.close(placeholder)
+        reserved_stdout_fd = True
+        logger.debug("stdio guard: reserved vacant fd %d", _STDOUT_FD)
 
     # 2. Private copy of the protocol channel, before anything else can touch it.
     protected_fd = os.dup(stdout_fd)
@@ -200,5 +244,8 @@ def protected_stdout() -> Iterator[TextIO]:
             if sink_fd is not None:
                 with contextlib.suppress(OSError):
                     os.close(sink_fd)
+            if reserved_stdout_fd:
+                with contextlib.suppress(OSError):
+                    os.close(_STDOUT_FD)
             with contextlib.suppress(ValueError, OSError):
                 protected.close()

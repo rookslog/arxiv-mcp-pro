@@ -64,6 +64,11 @@ _libc_resolved = False
 # that it never had.
 _HANDLE_UNAVAILABLE = object()
 
+# Whether this process has already completed a guard entry. It decides where a
+# libc-buffered byte belongs, and the two cases genuinely differ — see the
+# comment at the entry-time flush.
+_entered_before = False
+
 
 def _fileno_or_none(stream: object) -> int | None:
     """Return a stream's *live* file descriptor, or None.
@@ -272,6 +277,11 @@ def protected_stdout() -> Iterator[TextIO]:
     and only the Python-level redirect is applied. The yielded stream is always
     the correct one to write protocol bytes to.
     """
+    global _entered_before
+
+    first_entry = not _entered_before
+    _entered_before = True
+
     original_stdout: TextIO = sys.stdout
     stdout_fd = _fileno_or_none(original_stdout)
 
@@ -323,23 +333,37 @@ def protected_stdout() -> Iterator[TextIO]:
     # silently redirect legitimate output into the sink, and a write between two
     # sessions would vanish.
     #
-    # The C runtime's buffer is deliberately NOT drained here, and the asymmetry
-    # is the whole point. Under the stdio transport fd 1 is the protocol channel
-    # from process start, and a native extension imported before this ran — the
-    # server imports its tools, and the pdf tool pulls in PyMuPDF — may already
-    # have a diagnostic sitting in libc's buffer. Flushing it now would push it
-    # straight onto JSON-RPC, the guard causing the exact corruption it exists
-    # to prevent. It is drained below instead, once the sink is in place.
-    # Python's layer needs no such care: pymupdf prints with `flush=1`, so
-    # nothing accumulates there to begin with.
+    # The C runtime's buffer is drained here only from the SECOND entry onward,
+    # and the split is load-bearing in both directions.
+    #
+    # On the *first* entry there is no way to tell a host's own buffered write
+    # from a diagnostic a native extension emitted at import — and under the
+    # stdio transport fd 1 has been the protocol channel since process start,
+    # with the server importing its tools (the pdf tool pulls in PyMuPDF)
+    # before any session opens. Draining now would push that diagnostic
+    # straight onto JSON-RPC: the guard causing the exact corruption it exists
+    # to prevent. So the first entry defers the drain until the sink is in
+    # place, below.
+    #
+    # From the second entry on, the ambiguity is gone. The process has already
+    # completed a session and fd 1 was restored to the host, so anything
+    # buffered since is the host's own output and belongs on the host's real
+    # stdout — the C-level counterpart of the Python flush beside it.
+    #
+    # The costs are deliberately asymmetric: a misplaced diagnostic merely
+    # appears on stderr, while a misplaced byte on the protocol channel kills
+    # the session.
     with contextlib.suppress(ValueError, OSError):
         original_stdout.flush()
+    if not first_entry:
+        _flush_c_stdio(quiet=stderr_is_protocol)
 
     if stderr_is_protocol:
         # stderr IS the protocol channel; it cannot also be the sink.
         stderr_fd = None
 
     sink_fd: int | None = None
+    stdout_diverted = False
     reserved_stdout_fd = False
     alias_saved_fd: int | None = None
     alias_inheritable = False
@@ -400,6 +424,7 @@ def protected_stdout() -> Iterator[TextIO]:
         wrapper_owns_fd = True  # closing the wrapper now closes the descriptor
 
         os.dup2(sink, stdout_fd, inheritable=stdout_inheritable)
+        stdout_diverted = True
         _win32_set_stdout_handle(
             _win32_handle_for_fd(stdout_fd, quiet=stderr_is_protocol),
             quiet=stderr_is_protocol,
@@ -410,6 +435,22 @@ def protected_stdout() -> Iterator[TextIO]:
         # near when it happened, not at session end.
         _flush_c_stdio(quiet=stderr_is_protocol)
     except BaseException:
+        # Undo the diversion before releasing anything. Without this, a failure
+        # after fd 1 was pointed at the sink — a KeyboardInterrupt during the
+        # drain below is enough, since `_flush_c_stdio` catches `Exception` and
+        # not `BaseException` — leaves the host's stdout permanently aimed at
+        # the sink, with the only copy of the real one closed a few lines down.
+        if stdout_diverted and protected_fd is not None:
+            with contextlib.suppress(OSError):
+                os.dup2(protected_fd, stdout_fd, inheritable=stdout_inheritable)
+            _win32_set_stdout_handle(
+                (
+                    original_win32_stdout
+                    if original_win32_stdout is not _HANDLE_UNAVAILABLE
+                    else _win32_handle_for_fd(stdout_fd, quiet=stderr_is_protocol)
+                ),
+                quiet=stderr_is_protocol,
+            )
         if protected is not None:
             with contextlib.suppress(ValueError, OSError):
                 protected.close()

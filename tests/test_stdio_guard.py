@@ -523,3 +523,67 @@ def test_native_output_buffered_before_the_guard_never_reaches_the_channel():
     assert result.returncode == 0, result.stderr
     assert result.stdout == '{"jsonrpc":"2.0","id":15}\n'
     assert "PRE_GUARD_C_DIAGNOSTIC" in result.stderr
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="ctypes.CDLL(None) is POSIX-only; Windows has no single process-wide CRT",
+)
+def test_native_host_output_between_sessions_reaches_real_stdout():
+    """The C-level counterpart of the between-sessions guarantee.
+
+    Once a session has ended, fd 1 belongs to the host again, so anything a
+    native extension buffers before the next session is the host's own output.
+    Deferring that drain past the diversion — correct on the first entry, where
+    the buffer may hold a startup diagnostic aimed at the protocol channel —
+    would silently sweep it into stderr from the second entry onward.
+    """
+    result = _run_child(r"""
+        import ctypes
+        libc = ctypes.CDLL(None)
+        with protected_stdout() as protocol:
+            protocol.write("FIRST\n"); protocol.flush()
+        libc.printf(b"C_BETWEEN_SESSIONS\n")   # host output, buffered
+        with protected_stdout() as protocol:
+            protocol.write("SECOND\n"); protocol.flush()
+        """)
+
+    assert result.returncode == 0, result.stderr
+    assert "C_BETWEEN_SESSIONS" in result.stdout
+    assert "C_BETWEEN_SESSIONS" not in result.stderr
+
+
+def test_an_interrupted_setup_gives_the_host_its_stdout_back():
+    """A failure after the diversion must not strand stdout on the sink.
+
+    `_flush_c_stdio` catches `Exception`, so a `KeyboardInterrupt` raised
+    during it reaches the acquisition rollback. That rollback closes the only
+    surviving copy of the real stdout, so unless it restores the descriptor
+    first, every later write goes to the sink for the life of the process.
+    """
+    result = _run_child(r"""
+        import arxiv_mcp_server.stdio_guard as guard
+
+        real_flush = guard._flush_c_stdio
+        calls = []
+
+        def exploding_flush(*a, **kw):
+            calls.append(1)
+            if len(calls) == 1:
+                raise KeyboardInterrupt("during setup")
+            return real_flush(*a, **kw)
+
+        guard._flush_c_stdio = exploding_flush
+        try:
+            with guard.protected_stdout():
+                pass
+        except KeyboardInterrupt:
+            pass
+        guard._flush_c_stdio = real_flush
+
+        os.write(1, b"STDOUT_IS_BACK\n")
+        """)
+
+    assert result.returncode == 0, result.stderr
+    assert "STDOUT_IS_BACK" in result.stdout
+    assert "STDOUT_IS_BACK" not in result.stderr

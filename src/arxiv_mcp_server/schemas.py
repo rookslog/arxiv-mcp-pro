@@ -37,9 +37,14 @@ class ToolInput(BaseModel):
 def _strip_nullable(node: Dict[str, Any]) -> Dict[str, Any]:
     """Collapse pydantic's `Optional[T]` encoding back to a plain type.
 
-    An optional field is modelled as ``anyOf: [{...T...}, {"type": "null"}]``.
-    MCP clients read a missing key as absent, so the null branch carries no
-    information for them and only makes the schema harder to read.
+    An optional *property* is modelled as ``anyOf: [{...T...}, {"type":
+    "null"}]``. A client reads a missing key as absent, so the null branch adds
+    nothing there.
+
+    This applies to properties only. Inside a collection — `list[int | None]` —
+    the null branch is the difference between accepting `[null]` and rejecting
+    it, so collapsing it there would advertise a stricter schema than the model
+    actually enforces.
     """
     branches = node.get("anyOf")
     if not isinstance(branches, list):
@@ -52,26 +57,43 @@ def _strip_nullable(node: Dict[str, Any]) -> Dict[str, Any]:
     return merged
 
 
-def _clean(node: Any) -> Any:
+def _clean_schema(node: Any) -> Any:
     """Drop pydantic bookkeeping that is noise in an MCP tool schema.
 
     Removes generated `title`s (pydantic derives one per model and per field;
-    none of them tell a client anything the property name does not) and the
-    implicit `default: null` that an optional field picks up.
+    none tell a client anything the property name does not) and the implicit
+    `default: null` an optional field picks up.
+
+    Mappings whose keys are *names* rather than schema keywords — `properties`,
+    `$defs` — are recursed into by value, never filtered by key. Otherwise a
+    field genuinely named `title` would be deleted from the schema while
+    remaining in `required`, leaving a tool that rejects the call whether the
+    argument is supplied or not.
     """
     if isinstance(node, list):
-        return [_clean(item) for item in node]
+        return [_clean_schema(item) for item in node]
     if not isinstance(node, dict):
         return node
 
-    node = _strip_nullable(node)
     cleaned: Dict[str, Any] = {}
     for key, value in node.items():
         if key == "title":
             continue
         if key == "default" and value is None:
             continue
-        cleaned[key] = _clean(value)
+        if key == "properties" and isinstance(value, dict):
+            cleaned[key] = {
+                name: (
+                    _clean_schema(_strip_nullable(sub))
+                    if isinstance(sub, dict)
+                    else sub
+                )
+                for name, sub in value.items()
+            }
+        elif key in ("$defs", "definitions") and isinstance(value, dict):
+            cleaned[key] = {name: _clean_schema(sub) for name, sub in value.items()}
+        else:
+            cleaned[key] = _clean_schema(value)
     return cleaned
 
 
@@ -82,7 +104,18 @@ def schema_from_model(model: Type[BaseModel]) -> Dict[str, Any]:
     `type`, `properties`, `required`, `additionalProperties` — so a generated
     schema diffs cleanly against the hand-written one it replaces.
     """
-    raw = _clean(model.model_json_schema())
+    raw = _clean_schema(model.model_json_schema())
+
+    # A self-referential model is emitted as `{"$defs": {...}, "$ref": ...}`
+    # with no top-level `properties`. Flattening that would silently advertise
+    # an empty closed object, so every real call would be rejected as carrying
+    # additional properties. Refuse loudly instead: no tool needs this today,
+    # and a clear error beats a schema that is quietly wrong.
+    if "$ref" in raw:
+        raise ValueError(
+            f"{model.__name__} is self-referential; its schema has a root $ref "
+            "that schema_from_model cannot flatten into an MCP input schema."
+        )
 
     schema: Dict[str, Any] = {"type": "object", "properties": raw.get("properties", {})}
     if "required" in raw:

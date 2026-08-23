@@ -11,43 +11,24 @@ empty one both mean "no required properties" — and it removes an inconsistency
 between tools.
 """
 
+import asyncio
 import json
 from pathlib import Path
 
 import pytest
 
 from arxiv_mcp_server.schemas import ToolInput, schema_from_model
-from arxiv_mcp_server.tools import (
-    abstract_tool,
-    citation_graph_tool,
-    download_tool,
-    library_influence_tool,
-    list_tool,
-    read_tool,
-    reindex_tool,
-    search_tool,
-    semantic_search_tool,
-    watch_topic_tool,
-)
-from arxiv_mcp_server.tools.alerts import check_alerts_tool
+from arxiv_mcp_server.server import list_tools as registered_tools
 
 SNAPSHOT = json.loads(
     (Path(__file__).parent / "fixtures" / "tool_schema_snapshot.json").read_text()
 )
 
-ALL_TOOLS = [
-    search_tool,
-    download_tool,
-    list_tool,
-    read_tool,
-    abstract_tool,
-    semantic_search_tool,
-    reindex_tool,
-    citation_graph_tool,
-    library_influence_tool,
-    watch_topic_tool,
-    check_alerts_tool,
-]
+# The server's own `list_tools` handler is the authority on what is registered.
+# Deriving from it means a twelfth tool cannot be added to the server and quietly
+# skipped by every check in this file — which a second hand-maintained list here
+# would have allowed, while still passing its own coverage assertion.
+ALL_TOOLS = asyncio.run(registered_tools())
 
 
 @pytest.mark.parametrize("tool", ALL_TOOLS, ids=lambda t: t.name)
@@ -83,7 +64,12 @@ def test_every_property_is_documented(tool):
 
 
 def test_snapshot_covers_every_registered_tool():
-    """A new tool must be added to the snapshot, not silently skipped."""
+    """A new tool must be added to the snapshot, not silently skipped.
+
+    `ALL_TOOLS` comes from the server's own `list_tools`, so this compares the
+    snapshot against what the server actually advertises rather than against a
+    second list maintained alongside it.
+    """
     assert {t.name for t in ALL_TOOLS} == set(SNAPSHOT)
 
 
@@ -151,3 +137,68 @@ def test_flat_models_do_not_gain_an_empty_defs_block():
         a: int = Field(description="a")
 
     assert "$defs" not in schema_from_model(Flat)
+
+
+def test_a_field_named_title_survives_cleaning():
+    """Stripping pydantic's generated `title` must not delete a field called title.
+
+    `title` is both a schema annotation and a plausible parameter name. Filtering
+    it by key everywhere would drop the property while leaving it in `required`,
+    producing a tool that rejects the call whether the argument is present (as an
+    additional property) or absent (as a missing required one).
+    """
+    from pydantic import Field
+
+    class Titled(ToolInput):
+        title: str = Field(description="the title to use")
+
+    schema = schema_from_model(Titled)
+
+    assert "title" in schema["properties"], "the field was stripped as metadata"
+    assert schema["properties"]["title"] == {
+        "type": "string",
+        "description": "the title to use",
+    }
+    assert schema["required"] == ["title"]
+
+
+def test_nullable_collection_elements_keep_their_null_branch():
+    """`list[int | None]` accepts `[null]`; the schema must not say otherwise.
+
+    Collapsing nullability is right for an optional property, where omission and
+    null mean the same thing to a client. Inside a collection it is not: it would
+    advertise a stricter schema than the model enforces, so valid input would be
+    rejected before the handler ran.
+    """
+    from typing import List, Optional
+
+    from pydantic import Field
+
+    class WithList(ToolInput):
+        values: List[Optional[int]] = Field(description="values")
+
+    items = schema_from_model(WithList)["properties"]["values"]["items"]
+
+    assert "anyOf" in items, "the null branch was collapsed away"
+    assert {b.get("type") for b in items["anyOf"]} == {"integer", "null"}
+
+
+def test_a_self_referential_model_is_refused_loudly():
+    """A recursive model yields a root `$ref` that cannot be flattened.
+
+    Flattening it silently would advertise an empty closed object and reject
+    every real call. Failing at definition time beats failing at call time.
+    """
+    from typing import Optional
+
+    import pytest
+    from pydantic import Field
+
+    class Node(ToolInput):
+        value: int = Field(description="v")
+        child: Optional["Node"] = Field(default=None, description="c")
+
+    Node.model_rebuild()
+
+    with pytest.raises(ValueError, match="self-referential"):
+        schema_from_model(Node)

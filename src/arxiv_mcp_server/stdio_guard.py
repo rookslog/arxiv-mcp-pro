@@ -279,8 +279,11 @@ def protected_stdout() -> Iterator[TextIO]:
     """
     global _entered_before
 
+    # Read now, commit later. Marking the entry here would make a *failed*
+    # setup count as one, so a retry would take the later-entry path and drain
+    # the buffers while fd 1 is still the protocol channel — emitting the very
+    # startup diagnostic the split exists to quarantine.
     first_entry = not _entered_before
-    _entered_before = True
 
     original_stdout: TextIO = sys.stdout
     stdout_fd = _fileno_or_none(original_stdout)
@@ -333,29 +336,30 @@ def protected_stdout() -> Iterator[TextIO]:
     # silently redirect legitimate output into the sink, and a write between two
     # sessions would vanish.
     #
-    # The C runtime's buffer is drained here only from the SECOND entry onward,
-    # and the split is load-bearing in both directions.
+    # NEITHER buffer is drained here on the first entry, and the split is
+    # load-bearing in both directions.
     #
     # On the *first* entry there is no way to tell a host's own buffered write
-    # from a diagnostic a native extension emitted at import — and under the
-    # stdio transport fd 1 has been the protocol channel since process start,
-    # with the server importing its tools (the pdf tool pulls in PyMuPDF)
-    # before any session opens. Draining now would push that diagnostic
-    # straight onto JSON-RPC: the guard causing the exact corruption it exists
-    # to prevent. So the first entry defers the drain until the sink is in
-    # place, below.
+    # from a diagnostic a library emitted at import — and under the stdio
+    # transport fd 1 has been the protocol channel since process start, with
+    # the server importing its tools (the pdf tool pulls in PyMuPDF) before any
+    # session opens. Draining now would push that diagnostic straight onto
+    # JSON-RPC: the guard causing the exact corruption it exists to prevent.
+    # A pipe is block-buffered, so an unterminated `print()` at import time sits
+    # in Python's wrapper exactly as a `printf` sits in libc's — the two layers
+    # need the same treatment, not different treatment.
     #
     # From the second entry on, the ambiguity is gone. The process has already
     # completed a session and fd 1 was restored to the host, so anything
     # buffered since is the host's own output and belongs on the host's real
-    # stdout — the C-level counterpart of the Python flush beside it.
+    # stdout.
     #
-    # The costs are deliberately asymmetric: a misplaced diagnostic merely
-    # appears on stderr, while a misplaced byte on the protocol channel kills
-    # the session.
-    with contextlib.suppress(ValueError, OSError):
-        original_stdout.flush()
+    # The costs are deliberately asymmetric, and that is what decides the
+    # ambiguous first-entry case: a misplaced diagnostic merely appears on
+    # stderr, while a misplaced byte on the protocol channel kills the session.
     if not first_entry:
+        with contextlib.suppress(ValueError, OSError):
+            original_stdout.flush()
         _flush_c_stdio(quiet=stderr_is_protocol)
 
     if stderr_is_protocol:
@@ -425,14 +429,20 @@ def protected_stdout() -> Iterator[TextIO]:
 
         os.dup2(sink, stdout_fd, inheritable=stdout_inheritable)
         stdout_diverted = True
+        # The setup that had to survive is done; only now does this count as an
+        # entry for the next caller.
+        _entered_before = True
         _win32_set_stdout_handle(
             _win32_handle_for_fd(stdout_fd, quiet=stderr_is_protocol),
             quiet=stderr_is_protocol,
         )
-        # Now that fd 1 lands in the sink, it is safe to drain whatever a native
-        # extension buffered before the guard existed. Doing it here rather than
-        # at teardown also means an operator watching stderr sees the diagnostic
-        # near when it happened, not at session end.
+        # Now that fd 1 lands in the sink, it is safe to drain whatever was
+        # buffered before the guard existed — in either layer. Doing it here
+        # rather than at teardown also means an operator watching stderr sees
+        # the diagnostic near when it happened, not at session end.
+        if first_entry:
+            with contextlib.suppress(ValueError, OSError):
+                original_stdout.flush()
         _flush_c_stdio(quiet=stderr_is_protocol)
     except BaseException:
         # Undo the diversion before releasing anything. Without this, a failure
@@ -481,45 +491,53 @@ def protected_stdout() -> Iterator[TextIO]:
     try:
         yield protected
     finally:
-        # Order matters here too. A library holding a pre-guard reference to
-        # stdout may have written without flushing — normal when stdout is a
-        # pipe — leaving diagnostics sitting in that wrapper's buffer. Flush it
-        # while fd 1 still points at the sink; flushing after the restore would
-        # empty those bytes straight onto the JSON-RPC channel. The same is
-        # true one layer down, in the C runtime's buffer, where a native
-        # extension's printf output waits — and that layer is the one MuPDF
-        # writes through.
-        with contextlib.suppress(ValueError, OSError):
-            original_stdout.flush()
-        with contextlib.suppress(ValueError, OSError):
-            protected.flush()
-        _flush_c_stdio(quiet=stderr_is_protocol)
+        # The flushes are wrapped so that restoration runs even when one of
+        # them raises something `contextlib.suppress` and `_flush_c_stdio` do
+        # not catch — a KeyboardInterrupt during the drain is enough. Leaving
+        # this `finally` early would strand the host's stdout on the sink for
+        # the life of the process, with its only surviving copy closed below.
+        #
+        # A library holding a pre-guard reference to stdout may have written
+        # without flushing, which is normal when stdout is a pipe. Both buffers
+        # are drained while fd 1 still points at the sink; draining after the
+        # restore would empty those bytes straight onto the JSON-RPC channel.
         try:
-            os.dup2(protected_fd, stdout_fd, inheritable=stdout_inheritable)
-            # Put back the handle the host actually had. Falling back to the
-            # restored descriptor's handle is only for the case where the
-            # original could not be read at all.
-            _win32_set_stdout_handle(
-                (
-                    original_win32_stdout
-                    if original_win32_stdout is not _HANDLE_UNAVAILABLE
-                    else _win32_handle_for_fd(stdout_fd, quiet=stderr_is_protocol)
-                ),
-                quiet=stderr_is_protocol,
-            )
-        except OSError as exc:  # pragma: no cover - descriptor already reclaimed
-            _diag("stdio guard: could not restore fd %d: %r", stdout_fd, exc)
-        finally:
-            sys.stdout = original_stdout
-            if sink_fd is not None:
-                with contextlib.suppress(OSError):
-                    os.close(sink_fd)
-            if alias_saved_fd is not None:
-                with contextlib.suppress(OSError):
-                    os.dup2(alias_saved_fd, _STDOUT_FD, inheritable=alias_inheritable)
-                    os.close(alias_saved_fd)
-            if reserved_stdout_fd:
-                with contextlib.suppress(OSError):
-                    os.close(_STDOUT_FD)
             with contextlib.suppress(ValueError, OSError):
-                protected.close()
+                original_stdout.flush()
+            with contextlib.suppress(ValueError, OSError):
+                protected.flush()
+            _flush_c_stdio(quiet=stderr_is_protocol)
+        finally:
+            try:
+                os.dup2(protected_fd, stdout_fd, inheritable=stdout_inheritable)
+                # Put back the handle the host actually had. Falling back to
+                # the restored descriptor's handle is only for the case where
+                # the original could not be read at all.
+                _win32_set_stdout_handle(
+                    (
+                        original_win32_stdout
+                        if original_win32_stdout is not _HANDLE_UNAVAILABLE
+                        else _win32_handle_for_fd(stdout_fd, quiet=stderr_is_protocol)
+                    ),
+                    quiet=stderr_is_protocol,
+                )
+            except OSError as exc:  # pragma: no cover - descriptor reclaimed
+                _diag("stdio guard: could not restore fd %d: %r", stdout_fd, exc)
+            finally:
+                sys.stdout = original_stdout
+                if sink_fd is not None:
+                    with contextlib.suppress(OSError):
+                        os.close(sink_fd)
+                if alias_saved_fd is not None:
+                    with contextlib.suppress(OSError):
+                        os.dup2(
+                            alias_saved_fd,
+                            _STDOUT_FD,
+                            inheritable=alias_inheritable,
+                        )
+                        os.close(alias_saved_fd)
+                if reserved_stdout_fd:
+                    with contextlib.suppress(OSError):
+                        os.close(_STDOUT_FD)
+                with contextlib.suppress(ValueError, OSError):
+                    protected.close()

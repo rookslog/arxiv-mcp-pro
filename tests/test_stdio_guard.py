@@ -587,3 +587,96 @@ def test_an_interrupted_setup_gives_the_host_its_stdout_back():
     assert result.returncode == 0, result.stderr
     assert "STDOUT_IS_BACK" in result.stdout
     assert "STDOUT_IS_BACK" not in result.stderr
+
+
+def test_python_buffered_startup_output_never_reaches_the_channel():
+    """A pipe is block-buffered, so an unterminated import-time print waits.
+
+    The C-buffer case has its own test; this is the same hazard one layer up.
+    Flushing Python's wrapper at entry — correct from the second session, where
+    it preserves host output — would push a startup diagnostic straight onto
+    JSON-RPC on the first.
+    """
+    result = _run_child(r"""
+        print("PY_STARTUP_DIAG", end="")      # buffered: no newline, pipe stdout
+        with protected_stdout() as protocol:
+            protocol.write('{"jsonrpc":"2.0","id":16}\n')
+            protocol.flush()
+        """)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == '{"jsonrpc":"2.0","id":16}\n'
+    assert "PY_STARTUP_DIAG" in result.stderr
+
+
+def test_a_failed_first_setup_does_not_consume_the_first_entry():
+    """A retry after a failed setup is still the first entry.
+
+    Counting a failed attempt would send the next call down the later-entry
+    path, draining the buffers while fd 1 is still the protocol channel — the
+    exact case the split exists to quarantine.
+    """
+    result = _run_child(r"""
+        import arxiv_mcp_server.stdio_guard as guard
+
+        print("PY_STARTUP_DIAG", end="")
+        real_dup = os.dup
+        failed = []
+
+        def dup_once_broken(fd):
+            if not failed:
+                failed.append(1)
+                raise OSError(24, "EMFILE (simulated)")
+            return real_dup(fd)
+
+        os.dup = dup_once_broken
+        try:
+            with guard.protected_stdout():
+                pass
+        except OSError:
+            pass
+        os.dup = real_dup
+
+        with guard.protected_stdout() as protocol:
+            protocol.write('{"jsonrpc":"2.0","id":17}\n')
+            protocol.flush()
+        """)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == '{"jsonrpc":"2.0","id":17}\n'
+    assert "PY_STARTUP_DIAG" in result.stderr
+
+
+def test_an_interrupted_teardown_gives_the_host_its_stdout_back():
+    """The teardown mirror of the interrupted-setup case.
+
+    `_flush_c_stdio` catches `Exception`, so a `KeyboardInterrupt` during the
+    teardown drain would leave the `finally` before the descriptor is restored,
+    stranding stdout on the sink while its only surviving copy is closed.
+    """
+    result = _run_child(r"""
+        import arxiv_mcp_server.stdio_guard as guard
+
+        real_flush = guard._flush_c_stdio
+        calls = []
+
+        def explode_on_teardown(*a, **kw):
+            calls.append(1)
+            if len(calls) == 2:          # entry drain first, then teardown
+                raise KeyboardInterrupt("during teardown")
+            return real_flush(*a, **kw)
+
+        guard._flush_c_stdio = explode_on_teardown
+        try:
+            with guard.protected_stdout() as protocol:
+                protocol.write("IGNORED\n"); protocol.flush()
+        except KeyboardInterrupt:
+            pass
+        guard._flush_c_stdio = real_flush
+
+        os.write(1, b"STDOUT_IS_BACK\n")
+        """)
+
+    assert result.returncode == 0, result.stderr
+    assert "STDOUT_IS_BACK" in result.stdout
+    assert "STDOUT_IS_BACK" not in result.stderr

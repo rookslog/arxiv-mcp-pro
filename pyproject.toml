@@ -29,17 +29,22 @@ authors = [
 maintainers = [
     { name = "Logan Rooks" }
 ]
-# Direct imports only. aiohttp / python-dotenv / anyio / sse-starlette were
-# declared here for years with zero import sites in src (inherited cruft);
-# anyio + sse-starlette still arrive transitively via mcp, dotenv via
-# pydantic-settings — dropping aiohttp removes an 8-package subtree from a
-# clean install. arxiv is pinned <3: 4.x swaps feedparser for lxml (~20 MB
+# Direct imports only. aiohttp / python-dotenv / sse-starlette were declared
+# here for years with zero import sites in src (inherited cruft); sse-starlette
+# still arrives transitively via mcp, dotenv via pydantic-settings — dropping
+# aiohttp removes an 8-package subtree from a clean install. anyio was in that
+# same group until the stdio guard gave it a real import site in server.py, so
+# it is declared again rather than relied on transitively through mcp. arxiv is pinned <3: 4.x swaps feedparser for lxml (~20 MB
 # compiled) and has never been what uv.lock tests against (2.4.0).
 dependencies = [
     "arxiv>=2.1.0,<3",
     "httpx>=0.24.0",
     "python-dateutil>=2.8.2",
     "pydantic>=2.8.0",
+    # Direct import in server.py: `anyio.wrap_file` adapts the guard's private
+    # protocol stream for `stdio_server`. It also arrives via mcp, but relying
+    # on that would break the import on any mcp release that drops it.
+    "anyio>=4.0.0",
     # mcp 2.0 removed the low-level `Server` decorator API (list_prompts,
     # get_prompt, list_tools, call_tool) that server.py is built on. Pinned
     # below 2 until that migration is done; see CHANGELOG under [Unreleased].

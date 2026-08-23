@@ -238,6 +238,17 @@ async def test_run_stdio_hands_the_protected_stream_to_the_transport():
     run.assert_awaited_once()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "Aliasing detection is POSIX-only. Windows anonymous pipes carry no "
+        "filesystem identity — two independent pipes both report zero "
+        "st_dev/st_ino — so _same_destination deliberately treats that as "
+        "inconclusive rather than lose every diagnostic to the null device on "
+        "the normal Windows arrangement. Closing this needs a Win32 "
+        "FILE_ID_INFO query; see the note in stdio_guard._same_destination."
+    ),
+)
 def test_stdout_is_diverted_when_stderr_is_the_same_pipe():
     """`2>&1` must not turn the guard into a silent no-op.
 
@@ -309,6 +320,17 @@ def test_host_output_between_sessions_reaches_real_stdout():
     assert "BETWEEN_SESSIONS" not in result.stderr
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "Aliasing detection is POSIX-only. Windows anonymous pipes carry no "
+        "filesystem identity — two independent pipes both report zero "
+        "st_dev/st_ino — so _same_destination deliberately treats that as "
+        "inconclusive rather than lose every diagnostic to the null device on "
+        "the normal Windows arrangement. Closing this needs a Win32 "
+        "FILE_ID_INFO query; see the note in stdio_guard._same_destination."
+    ),
+)
 def test_an_occupied_fd_one_that_aliases_the_protocol_is_also_diverted():
     """A host may move sys.stdout to a dup and leave fd 1 open on the same pipe.
 

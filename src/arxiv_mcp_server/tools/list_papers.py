@@ -17,7 +17,8 @@ settings = Settings()
 # with optional version suffix (v1, v2, …).
 _ARXIV_ID_RE = re.compile(
     r"^(\d{4}\.\d{4,5}(v\d+)?"  # new-style: 2404.18922 or 2404.18922v3
-    r"|[a-z\-]+(/[a-z\-]+)?/\d{7}(v\d+)?)\Z",  # old-style: hep-ph/9901234
+    # The archive may carry a subject class: math.GT/0309136, cs.AI/9901001.
+    r"|[a-z\-]+(\.[a-z\-]+)?(/[a-z\-]+)?/\d{7}(v\d+)?)\Z",  # old: hep-ph/9901234
     re.IGNORECASE,
 )
 

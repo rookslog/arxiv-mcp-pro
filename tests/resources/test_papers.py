@@ -8,6 +8,7 @@ PDF/markdown I/O.
 """
 
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -124,3 +125,39 @@ async def test_old_style_id_round_trips_through_paper_manager(
     assert await pm.get_paper_content(paper_id) == content
     assert len(await pm.list_resources()) == 1
     search.assert_called_once_with(id_list=[paper_id])
+
+
+@pytest.mark.asyncio
+async def test_the_advertised_resource_uri_resolves_to_the_file_that_exists(
+    paper_manager_env, monkeypatch
+):
+    """A `file://` URI is percent-decoded by whoever consumes it.
+
+    The stem carries `%2F` now, so interpolating it into `file://{path}` hands
+    the client `hep-th%2F9901001.md`, which decodes straight back to the nested
+    `hep-th/9901001.md` this encoding exists to avoid — the one path guaranteed
+    not to be there. Asserting on `Path.as_uri()` here would prove nothing: it
+    would pass whether or not `papers.py` calls it. So this goes through
+    `list_resources` and decodes what a client would actually receive.
+    """
+    from urllib.parse import unquote, urlparse
+
+    stored = paper_manager_env / "hep-th%2F9901001.md"
+    stored.write_text("legacy paper", encoding="utf-8")
+
+    async def _pace():
+        return None
+
+    monkeypatch.setattr(papers_module, "pace_arxiv_request", _pace)
+    monkeypatch.setattr(papers_module, "record_arxiv_request", lambda: None)
+    monkeypatch.setattr(papers_module.arxiv, "Search", MagicMock(return_value=object()))
+
+    pm = papers_module.PaperManager()
+    pm.client = MagicMock()
+    pm.client.results.return_value = [MagicMock(title="Legacy", summary="Abstract")]
+
+    (resource,) = await pm.list_resources()
+    resolved = Path(unquote(urlparse(str(resource.uri)).path))
+
+    assert resolved == stored
+    assert resolved.exists()

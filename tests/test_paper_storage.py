@@ -1,5 +1,7 @@
 """The ID <-> filename mapping, including the stems it must refuse to decode."""
 
+from pathlib import Path
+
 import pytest
 
 from arxiv_mcp_server.paper_storage import (
@@ -66,3 +68,18 @@ def test_a_stem_this_module_would_not_write_is_not_decoded_at_all():
 def test_a_trailing_newline_does_not_pass_for_an_id():
     """`$` matches before a final newline; the anchor has to be `\\Z`."""
     assert not is_valid_arxiv_id("2401.12345\n")
+
+
+@pytest.mark.parametrize(
+    "paper_id",
+    ["math.GT/0309136", "cs.AI/9901001", "cond-mat.stat-mech/0201001v2"],
+)
+def test_a_legacy_archive_with_a_subject_class_is_a_valid_id(paper_id):
+    """`math.GT/0309136` is as real an arXiv ID as `hep-th/9901001`.
+
+    Nothing could store one before, so the gap was unreachable; now that
+    slash-style IDs round-trip, a dotted archive would be written by
+    `download_paper`, read by `read_paper`, and then omitted by `list_papers`
+    and skipped by the semantic reindex, which share this predicate.
+    """
+    assert is_valid_arxiv_id(paper_id)

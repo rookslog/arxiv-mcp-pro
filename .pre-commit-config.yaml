@@ -29,7 +29,16 @@ repos:
         files: claim-ledger\.md$
       - id: pytest
         name: pytest (pre-push)
-        entry: python -m pytest -q
+        # Runs with the WORKTREE being pushed at the front of PYTHONPATH.
+        # Without that, `import arxiv_mcp_server` resolves through the editable
+        # install in the dev venv, which points at whatever checkout ran
+        # `pip install -e .` — so the gate collects this branch's tests and then
+        # runs them against a different branch's source. It passes a broken push
+        # whenever that other checkout happens to be fine, which is the failure
+        # mode this whole project keeps hitting: a green signal measuring the
+        # wrong thing. Observed 2026-08-23, when the dev checkout sat on a
+        # feature branch and the gate silently validated it instead.
+        entry: bash -c 'root=$(git rev-parse --show-toplevel) && PYTHONPATH="$root/src${PYTHONPATH:+:$PYTHONPATH}" exec python -m pytest -q'
         language: system
         pass_filenames: false
         always_run: true

@@ -9,8 +9,12 @@ name: Lint
 on:
   push:
     branches: [ main ]
+  # No `branches` filter: that matches the PR's BASE, so a stacked PR — one
+  # based on another feature branch — would run neither this workflow nor the
+  # other. It would then display green off a single unrelated check for its
+  # whole review window, which is a false green of exactly the kind this
+  # project has been bitten by before.
   pull_request:
-    branches: [ main ]
     types: [opened, synchronize, reopened]
 
 concurrency:

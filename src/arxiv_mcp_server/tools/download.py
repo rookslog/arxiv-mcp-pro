@@ -13,6 +13,7 @@ import mcp.types as types
 from ..schemas import ToolInput, schema_from_model
 from mcp.types import ToolAnnotations
 from ..config import Settings, get_arxiv_client
+from ..paper_storage import paper_path
 from .content import add_content_payload
 from .arxiv_pacing import pace_arxiv_request, record_arxiv_request
 import logging
@@ -139,7 +140,7 @@ def get_paper_path(paper_id: str, suffix: str = ".md") -> Path:
     """Get the absolute file path for a paper with given suffix."""
     storage_path = Path(settings.STORAGE_PATH)
     storage_path.mkdir(parents=True, exist_ok=True)
-    return storage_path / f"{paper_id}{suffix}"
+    return paper_path(storage_path, paper_id, suffix)
 
 
 # ---------------------------------------------------------------------------

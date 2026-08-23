@@ -8,6 +8,7 @@ import mcp.types as types
 from mcp.types import ToolAnnotations
 from ..schemas import ToolInput, schema_from_model
 from ..config import Settings
+from ..paper_storage import paper_id_from_stem, paper_path
 from .content import add_content_payload
 
 settings = Settings()
@@ -55,7 +56,9 @@ read_tool = types.Tool(
 
 def list_papers() -> list[str]:
     """List all stored paper IDs."""
-    return [p.stem for p in Path(settings.STORAGE_PATH).glob("*.md")]
+    return [
+        paper_id_from_stem(p.stem) for p in Path(settings.STORAGE_PATH).glob("*.md")
+    ]
 
 
 async def handle_read_paper(arguments: Dict[str, Any]) -> List[types.TextContent]:
@@ -78,7 +81,7 @@ async def handle_read_paper(arguments: Dict[str, Any]) -> List[types.TextContent
             ]
 
         # Get paper content
-        content = Path(settings.STORAGE_PATH, f"{paper_id}.md").read_text(
+        content = paper_path(settings.STORAGE_PATH, paper_id).read_text(
             encoding="utf-8"
         )
 

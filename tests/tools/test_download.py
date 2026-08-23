@@ -204,6 +204,49 @@ async def test_html_endpoint_success(temp_storage_path, mocker):
 
 
 @pytest.mark.asyncio
+async def test_old_style_id_html_fetch_is_cached_listed_and_readable(
+    temp_storage_path, mocker, monkeypatch
+):
+    """Old-style IDs containing '/' must round-trip through the flat cache."""
+    from arxiv_mcp_server.tools import download as download_module
+    from arxiv_mcp_server.tools import list_papers as list_module
+    from arxiv_mcp_server.tools import read_paper as read_module
+
+    for module in (download_module, list_module, read_module):
+        monkeypatch.setattr(
+            module.settings,
+            "_get_storage_path_from_args",
+            lambda: temp_storage_path,
+        )
+
+    paper_id = "hep-th/9901001"
+    html_text = "Legacy paper content"
+    mocker.patch.object(
+        download_module,
+        "_fetch_html_content",
+        return_value=html_text,
+    )
+
+    download_response = await download_module.handle_download({"paper_id": paper_id})
+    download_result = json.loads(download_response[0].text)
+
+    assert download_result["status"] == "success"
+    assert download_result["source"] == "html"
+    assert (temp_storage_path / "hep-th%2F9901001.md").read_text(
+        encoding="utf-8"
+    ) == html_text
+    assert not (temp_storage_path / "hep-th").exists()
+
+    list_response = await list_module.handle_list_papers()
+    assert json.loads(list_response[0].text)["papers"] == [paper_id]
+
+    read_response = await read_module.handle_read_paper({"paper_id": paper_id})
+    read_result = json.loads(read_response[0].text)
+    assert read_result["status"] == "success"
+    assert read_result["content"].endswith(html_text)
+
+
+@pytest.mark.asyncio
 async def test_html_404_falls_back_to_pdf(temp_storage_path, mocker):
     """HTML endpoint returns None (404) -> falls back to PDF conversion."""
     paper_id = "2103.22222"

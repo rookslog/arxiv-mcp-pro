@@ -8,6 +8,7 @@ import logging
 from pydantic import AnyUrl
 import mcp.types as types
 from ..config import Settings
+from ..paper_storage import paper_id_from_stem, paper_path
 from ..tools.arxiv_pacing import pace_arxiv_request, record_arxiv_request
 
 logger = logging.getLogger("arxiv-mcp-pro")
@@ -25,7 +26,7 @@ class PaperManager:
 
     def _get_paper_path(self, paper_id: str) -> Path:
         """Get the absolute file path for a paper."""
-        return self.storage_path / f"{paper_id}.md"
+        return paper_path(self.storage_path, paper_id)
 
     async def store_paper(self, paper_id: str, pdf_url: str) -> bool:
         """Download and store a paper from arXiv."""
@@ -78,7 +79,7 @@ class PaperManager:
     async def list_papers(self) -> list[str]:
         """List all stored paper IDs."""
         logger.info(f"Listing papers in {self.storage_path}")
-        paper_ids = [p.stem for p in self.storage_path.glob("*.md")]
+        paper_ids = [paper_id_from_stem(p.stem) for p in self.storage_path.glob("*.md")]
         logger.info(f"Found {len(paper_ids)} papers")
         return paper_ids
 

@@ -56,6 +56,12 @@ All notable changes to this project are documented here. The format is based on
   neither of which a `sys.stdout` reassignment would intercept. Diagnostics are
   redirected, not discarded: they land on stderr.
 
+### Fixed
+- **Old-style arXiv IDs can now use the local paper cache.** IDs containing a
+  slash (for example `hep-th/9901001`) are stored under a reversible flat
+  filename and round-trip through `download_paper`, `list_papers`,
+  `read_paper`, resources, and semantic reindexing.
+
 ## [0.8.0] - 2026-07-17
 
 Repo polish after the v0.7.0 PyPI release, plus reliability/ergonomics fixes

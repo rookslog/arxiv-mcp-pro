@@ -9,6 +9,7 @@ import mcp.types as types
 from mcp.types import ToolAnnotations
 from ..schemas import ToolInput, schema_from_model
 from ..config import Settings
+from ..paper_storage import paper_id_from_stem
 
 settings = Settings()
 
@@ -55,11 +56,12 @@ def list_papers() -> list[str]:
     storage = Path(settings.STORAGE_PATH)
     if not storage.exists():
         return []
-    return [
-        p.stem
+    paper_ids = [
+        paper_id_from_stem(p.stem)
         for p in storage.iterdir()
-        if p.is_file() and p.suffix == ".md" and is_valid_arxiv_id(p.stem)
+        if p.is_file() and p.suffix == ".md"
     ]
+    return [paper_id for paper_id in paper_ids if is_valid_arxiv_id(paper_id)]
 
 
 async def handle_list_papers(

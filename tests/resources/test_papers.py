@@ -95,3 +95,32 @@ async def test_list_resources_paces_once_per_paper(paper_manager_env, monkeypatc
     assert len(pace_calls) == 2  # one pace per stored paper id
     assert record.call_count == 2
     assert len(resources) == 2
+
+
+@pytest.mark.asyncio
+async def test_old_style_id_round_trips_through_paper_manager(
+    paper_manager_env, monkeypatch
+):
+    """PaperManager must expose an encoded cache file under its original ID."""
+    paper_id = "hep-th/9901001"
+    content = "legacy paper"
+    (paper_manager_env / "hep-th%2F9901001.md").write_text(content, encoding="utf-8")
+
+    async def _pace():
+        return None
+
+    monkeypatch.setattr(papers_module, "pace_arxiv_request", _pace)
+    monkeypatch.setattr(papers_module, "record_arxiv_request", lambda: None)
+    search = MagicMock(return_value=object())
+    monkeypatch.setattr(papers_module.arxiv, "Search", search)
+
+    pm = papers_module.PaperManager()
+    mock_paper = MagicMock(title="Legacy", summary="Abstract")
+    pm.client = MagicMock()
+    pm.client.results.return_value = [mock_paper]
+
+    assert await pm.list_papers() == [paper_id]
+    assert await pm.has_paper(paper_id) is True
+    assert await pm.get_paper_content(paper_id) == content
+    assert len(await pm.list_resources()) == 1
+    search.assert_called_once_with(id_list=[paper_id])

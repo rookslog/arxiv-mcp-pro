@@ -405,6 +405,14 @@ def test_c_runtime_buffered_output_never_reaches_the_channel():
     assert "C_BUFFERED_DIAGNOSTIC" in result.stderr
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "aliasing detection is POSIX-only: Windows anonymous pipes report a zero "
+        "fstat identity, so _same_destination cannot see that stderr IS the "
+        "protocol channel and the suppression this asserts never engages"
+    ),
+)
 def test_the_guard_does_not_log_onto_the_channel_it_is_protecting():
     """With `2>&1` and debug logging on, the guard's own records are the leak.
 

@@ -119,8 +119,11 @@ def _same_destination(a: int, b: int) -> bool:
     #
     # The consequence is honest and bounded: aliasing detection is verified on
     # POSIX only. Under `2>&1` on Windows the guard degrades to what it was
-    # before this check existed. Closing that needs a Win32 handle-identity
-    # call (FILE_ID_INFO), which is untestable from here.
+    # before this check existed — diagnostics go to stderr, which in that
+    # arrangement is the protocol channel, and the guard's own debug records go
+    # with them if the host has DEBUG logging on. Closing that needs a Win32
+    # handle-identity call (FILE_ID_INFO on a pipe handle), which is untestable
+    # from here; three tests carry a matching skipif for the same reason.
     if (sa.st_dev, sa.st_ino) == (0, 0) or (sb.st_dev, sb.st_ino) == (0, 0):
         return False
 

@@ -28,6 +28,21 @@ All notable changes to this project are documented here. The format is based on
   dimensions in one index.
 
 ### Changed
+
+- **Tool input schemas are now generated from pydantic models instead of being
+  hand-written.** Each tool had a JSON Schema dict sitting next to a handler
+  that read `arguments` by key, with nothing tying the two together. They could
+  drift silently, and cross-cutting schema work meant editing every tool by
+  hand — `d22255b` added `additionalProperties: false` to nine files, one line
+  at a time. The model is now the single definition; `ToolInput` sets
+  `extra="forbid"`, so a closed schema is inherited rather than remembered.
+
+  No client-observable change: all eleven advertised schemas and descriptions
+  are byte-identical to the ones they replace, locked in by a snapshot captured
+  before the refactor (`tests/fixtures/tool_schema_snapshot.json`). The one
+  normalisation is that four tools which omitted `required` now emit
+  `required: []` like the other seven, which is semantically the same.
+
 - **`[pro]` now installs the lightweight model2vec backend** for `semantic_search`
   (B23): static, torch-free embeddings (default model
   `minishlab/potion-retrieval-32M`, 512-dim, retrieval-tuned) — roughly 600 MB
@@ -37,6 +52,35 @@ All notable changes to this project are documented here. The format is based on
   built by the old backend is incompatible with a fresh model2vec install; the new
   compatibility guard tells you to `reindex` rather than failing obscurely. Users
   who need the previous embeddings can install `[pro-st]` (see Added).
+### Fixed
+
+- **CI and fresh installs were broken by `mcp` 2.0.** The dependency was
+  specified as `mcp>=1.27.0` with no upper bound. `mcp` 2.0 removed the
+  low-level `Server` decorator API — `list_prompts`, `get_prompt`, `list_tools`,
+  `call_tool` — that `server.py` is built on, so any environment resolving 2.0
+  failed at import with `AttributeError: 'Server' object has no attribute
+  'list_prompts'`. Every test module failed at collection, and a fresh
+  `pip install arxiv-mcp-pro` produced a server that could not start. Pinned to
+  `mcp>=1.27.0,<2` pending a deliberate 2.0 migration.
+
+- **stdio transport: stray writes to stdout no longer corrupt the JSON-RPC
+  channel and kill the server.** Under the stdio transport, fd 1 *is* the
+  protocol channel. PyMuPDF (pulled in by the `pdf` extra via `pymupdf4llm`)
+  binds `sys.stdout` at import time and prints MuPDF diagnostics through it, so
+  a single malformed-PDF warning injected non-JSON bytes mid-stream. The client
+  failed to decode, the session desynchronised, and the server died of the
+  resulting `BrokenPipeError`. Observed in the field three times against an
+  OpenAI Secure MCP Tunnel deployment: the tunnel logged `invalid character '='
+  looking for beginning of value`, then `stdio MCP command exited`, then served
+  HTTP 502 on every subsequent `initialize` — for 16 days, because the tunnel
+  process itself stayed up and its health endpoints kept returning 200.
+
+  `_run_stdio` now calls `stdio_guard.protected_stdout()` first, which duplicates
+  fd 1 to a private descriptor for the transport and points fd 1 at stderr. The
+  redirect is at the descriptor level, so it also covers C-extension writes
+  (MuPDF is a C library) and references to stdout captured before startup —
+  neither of which a `sys.stdout` reassignment would intercept. Diagnostics are
+  redirected, not discarded: they land on stderr.
 
 ## [0.8.0] - 2026-07-17
 

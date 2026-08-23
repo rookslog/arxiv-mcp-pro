@@ -7,8 +7,10 @@ import asyncio
 import httpx
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Any, Dict, List, Optional
+from pydantic import Field
 import mcp.types as types
+from ..schemas import ToolInput, schema_from_model
 from mcp.types import ToolAnnotations
 from ..config import Settings, get_arxiv_client
 from .content import add_content_payload
@@ -144,6 +146,29 @@ def get_paper_path(paper_id: str, suffix: str = ".md") -> Path:
 # Tool definition
 # ---------------------------------------------------------------------------
 
+
+class DownloadPaperInput(ToolInput):
+    """Arguments for the `download_paper` tool."""
+
+    max_chars: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Maximum raw paper characters to return from start. When omitted, the server's default cap applies (CONTENT_DEFAULT_MAX_CHARS, default 60000; 0 disables). Pass an explicit value to override."
+        ),
+    )
+    paper_id: str = Field(
+        description=("The arXiv ID of the paper to download (e.g. '2103.12345')")
+    )
+    start: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Zero-based character offset for returning large papers in chunks"
+        ),
+    )
+
+
 download_tool = types.Tool(
     name="download_paper",
     annotations=ToolAnnotations(readOnlyHint=False, openWorldHint=True),
@@ -156,27 +181,7 @@ download_tool = types.Tool(
         "CONTENT_DEFAULT_MAX_CHARS overrides it) — check `is_truncated` "
         "and follow `next_start` to page through the rest."
     ),
-    inputSchema={
-        "type": "object",
-        "properties": {
-            "paper_id": {
-                "type": "string",
-                "description": "The arXiv ID of the paper to download (e.g. '2103.12345')",
-            },
-            "start": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "Zero-based character offset for returning large papers in chunks",
-            },
-            "max_chars": {
-                "type": "integer",
-                "minimum": 1,
-                "description": "Maximum raw paper characters to return from start. When omitted, the server's default cap applies (CONTENT_DEFAULT_MAX_CHARS, default 60000; 0 disables). Pass an explicit value to override.",
-            },
-        },
-        "required": ["paper_id"],
-        "additionalProperties": False,
-    },
+    inputSchema=schema_from_model(DownloadPaperInput),
 )
 
 

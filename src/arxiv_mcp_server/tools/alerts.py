@@ -10,11 +10,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from pydantic import Field
 import mcp.types as types
 from mcp.types import ToolAnnotations
 
 from dateutil import parser
 
+from ..schemas import ToolInput, schema_from_model
 from ..config import Settings
 from .search import _raw_arxiv_search, _validate_categories
 
@@ -22,6 +24,38 @@ logger = logging.getLogger("arxiv-mcp-pro")
 settings = Settings()
 
 WATCH_FILE_NAME = "watched_topics.json"
+
+
+class CheckAlertsInput(ToolInput):
+    """Arguments for the `check_alerts` tool."""
+
+    topic: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional: check only this specific watched topic (must match the topic string used in watch_topic exactly). Omit to check all saved watches."
+        ),
+    )
+
+
+class WatchTopicInput(ToolInput):
+    """Arguments for the `watch_topic` tool."""
+
+    categories: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Optional arXiv category filter (e.g. ['cs.LG', 'cs.AI']). Narrows results to specific fields."
+        ),
+    )
+    max_results: int = Field(
+        default=10,
+        description=("Maximum papers to return per alert check (default: 10)."),
+    )
+    topic: str = Field(
+        description=(
+            'Query string to monitor. Uses arXiv search syntax — quoted phrases for exact matches, field specifiers (ti:, au:, abs:), and boolean operators (AND, OR, ANDNOT). Example: \'"reinforcement learning" AND "robotics"\'.'
+        )
+    )
+
 
 watch_topic_tool = types.Tool(
     name="watch_topic",
@@ -37,32 +71,7 @@ watch_topic_tool = types.Tool(
         "Calling watch_topic with the same topic string updates the existing watch rather than creating a duplicate. "
         "Pair with check_alerts to poll for new papers."
     ),
-    inputSchema={
-        "type": "object",
-        "properties": {
-            "topic": {
-                "type": "string",
-                "description": (
-                    "Query string to monitor. Uses arXiv search syntax — "
-                    "quoted phrases for exact matches, field specifiers (ti:, au:, abs:), "
-                    "and boolean operators (AND, OR, ANDNOT). "
-                    'Example: \'"reinforcement learning" AND "robotics"\'.'
-                ),
-            },
-            "categories": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Optional arXiv category filter (e.g. ['cs.LG', 'cs.AI']). Narrows results to specific fields.",
-            },
-            "max_results": {
-                "type": "integer",
-                "description": "Maximum papers to return per alert check (default: 10).",
-                "default": 10,
-            },
-        },
-        "required": ["topic"],
-        "additionalProperties": False,
-    },
+    inputSchema=schema_from_model(WatchTopicInput),
 )
 
 check_alerts_tool = types.Tool(
@@ -79,19 +88,7 @@ check_alerts_tool = types.Tool(
         "Use watch_topic to register topics before calling this. "
         "Returns a summary with per-topic new paper counts and full paper metadata (plus an `error` field for any topic that failed)."
     ),
-    inputSchema={
-        "type": "object",
-        "properties": {
-            "topic": {
-                "type": "string",
-                "description": (
-                    "Optional: check only this specific watched topic (must match the topic string used in watch_topic exactly). "
-                    "Omit to check all saved watches."
-                ),
-            }
-        },
-        "additionalProperties": False,
-    },
+    inputSchema=schema_from_model(CheckAlertsInput),
 )
 
 

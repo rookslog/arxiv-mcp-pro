@@ -5,7 +5,9 @@ import logging
 import time
 from typing import Any, Dict, List
 
+from pydantic import Field
 import mcp.types as types
+from ..schemas import ToolInput, schema_from_model
 from mcp.types import ToolAnnotations
 
 from .search import (
@@ -19,6 +21,15 @@ import xml.etree.ElementTree as ET
 
 logger = logging.getLogger("arxiv-mcp-pro")
 
+
+class GetAbstractInput(ToolInput):
+    """Arguments for the `get_abstract` tool."""
+
+    paper_id: str = Field(
+        description=("The arXiv paper ID (e.g. '2401.12345' or '2404.19756')")
+    )
+
+
 abstract_tool = types.Tool(
     name="get_abstract",
     annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
@@ -28,17 +39,7 @@ abstract_tool = types.Tool(
         "Returns: title, authors, abstract, categories, published date, and PDF URL. "
         "Workflow tip: search_papers -> get_abstract (check relevance) -> download_paper (if needed) -> read_paper."
     ),
-    inputSchema={
-        "type": "object",
-        "properties": {
-            "paper_id": {
-                "type": "string",
-                "description": "The arXiv paper ID (e.g. '2401.12345' or '2404.19756')",
-            }
-        },
-        "required": ["paper_id"],
-        "additionalProperties": False,
-    },
+    inputSchema=schema_from_model(GetAbstractInput),
 )
 
 

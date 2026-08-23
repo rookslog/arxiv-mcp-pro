@@ -12,9 +12,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 import httpx
+from pydantic import Field
 import mcp.types as types
 from mcp.types import ToolAnnotations
 
+from ..schemas import ToolInput, schema_from_model
 from ..config import Settings
 
 logger = logging.getLogger("arxiv-mcp-pro")
@@ -175,6 +177,39 @@ def _apply_edge_cap(
     return citations[:cap], references[:cap], truncated
 
 
+class CitationGraphInput(ToolInput):
+    """Arguments for the `citation_graph` tool."""
+
+    compact: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Drop author lists and nested external_ids, return minified id+title edges (lower token cost)."
+        ),
+    )
+    counts_only: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Return ONLY the paper's true citation/reference totals as `total_citations`/`total_references` (Semantic Scholar scalar counts) with no edge lists — one endpoint, a small fixed payload. Takes precedence over limit/offset/compact."
+        ),
+    )
+    limit: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=1000,
+        description=(
+            "Max edges per direction (opt-in pagination; uses Semantic Scholar's paginated endpoints). Omit for legacy full output."
+        ),
+    )
+    offset: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Pagination offset (applies only together with `limit` or `compact`)."
+        ),
+    )
+    paper_id: str = Field(description=("arXiv ID (for example: 2401.12345)."))
+
+
 citation_graph_tool = types.Tool(
     name="citation_graph",
     annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
@@ -193,50 +228,7 @@ citation_graph_tool = types.Tool(
         "the next `offset`. If an output cap is configured (CITATION_MAX_EDGES), "
         "a `truncated` flag is added when results were capped (legacy path only)."
     ),
-    inputSchema={
-        "type": "object",
-        "properties": {
-            "paper_id": {
-                "type": "string",
-                "description": "arXiv ID (for example: 2401.12345).",
-            },
-            "limit": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 1000,
-                "description": (
-                    "Max edges per direction (opt-in pagination; uses Semantic "
-                    "Scholar's paginated endpoints). Omit for legacy full output."
-                ),
-            },
-            "offset": {
-                "type": "integer",
-                "minimum": 0,
-                "description": (
-                    "Pagination offset (applies only together with `limit` or "
-                    "`compact`)."
-                ),
-            },
-            "compact": {
-                "type": "boolean",
-                "description": (
-                    "Drop author lists and nested external_ids, return minified "
-                    "id+title edges (lower token cost)."
-                ),
-            },
-            "counts_only": {
-                "type": "boolean",
-                "description": (
-                    "Return ONLY the paper's true citation/reference totals as "
-                    "`total_citations`/`total_references` (Semantic Scholar "
-                    "scalar counts) with no edge lists — one endpoint, a small "
-                    "fixed payload. Takes precedence over limit/offset/compact."
-                ),
-            },
-        },
-        "required": ["paper_id"],
-        "additionalProperties": False,
-    },
+    inputSchema=schema_from_model(CitationGraphInput),
 )
 
 

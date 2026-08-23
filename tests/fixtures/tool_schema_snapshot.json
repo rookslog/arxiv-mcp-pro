@@ -1,0 +1,314 @@
+{
+  "check_alerts": {
+    "annotations": {
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Check all saved topic watches for newly published papers since the last check. Omitting the topic parameter runs ALL saved watches and returns new papers for each. Passing a topic string checks only that specific watch. Updates each watch's last_checked timestamp after a SUCCESSFUL check, so subsequent calls only return newer papers. Topics are checked independently: if one topic's search fails (e.g. a transient arXiv error or rate limit), its entry carries an `error` field with `new_paper_count: 0` and its last_checked is left unchanged so it retries next call, while the other topics still return normally. Use watch_topic to register topics before calling this. Returns a summary with per-topic new paper counts and full paper metadata (plus an `error` field for any topic that failed).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "topic": {
+          "description": "Optional: check only this specific watched topic (must match the topic string used in watch_topic exactly). Omit to check all saved watches.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "citation_graph": {
+    "annotations": {
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Return papers citing an arXiv paper and papers that it references using Semantic Scholar's citation graph. NOTE: in the graph modes `citation_count`/`reference_count` count the edges RETURNED, not the paper's true totals \u2014 the default/legacy nested call is capped by Semantic Scholar at 1000 per direction, and in paginated mode they reflect the current page. For the paper's authoritative totals set `counts_only: true`: it returns `total_citations`/`total_references` (Semantic Scholar's scalar citationCount/referenceCount) with no edge lists \u2014 one endpoint, a small fixed payload. In paginated mode (`limit` or `compact` set) each direction has its own cursor (`pagination.citations.next` / `pagination.references.next`) to pass as the next `offset`. If an output cap is configured (CITATION_MAX_EDGES), a `truncated` flag is added when results were capped (legacy path only).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "compact": {
+          "description": "Drop author lists and nested external_ids, return minified id+title edges (lower token cost).",
+          "type": "boolean"
+        },
+        "counts_only": {
+          "description": "Return ONLY the paper's true citation/reference totals as `total_citations`/`total_references` (Semantic Scholar scalar counts) with no edge lists \u2014 one endpoint, a small fixed payload. Takes precedence over limit/offset/compact.",
+          "type": "boolean"
+        },
+        "limit": {
+          "description": "Max edges per direction (opt-in pagination; uses Semantic Scholar's paginated endpoints). Omit for legacy full output.",
+          "maximum": 1000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "description": "Pagination offset (applies only together with `limit` or `compact`).",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "paper_id": {
+          "description": "arXiv ID (for example: 2401.12345).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "paper_id"
+      ],
+      "type": "object"
+    }
+  },
+  "download_paper": {
+    "annotations": {
+      "openWorldHint": true,
+      "readOnlyHint": false
+    },
+    "description": "Download a paper from arXiv and return its text content. Tries the HTML version first for clean extraction; falls back to PDF conversion if HTML is unavailable. Stores the paper locally with start/max_chars pagination. Large papers are returned in capped chunks by default (60000 chars unless the server's CONTENT_DEFAULT_MAX_CHARS overrides it) \u2014 check `is_truncated` and follow `next_start` to page through the rest.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "max_chars": {
+          "description": "Maximum raw paper characters to return from start. When omitted, the server's default cap applies (CONTENT_DEFAULT_MAX_CHARS, default 60000; 0 disables). Pass an explicit value to override.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "paper_id": {
+          "description": "The arXiv ID of the paper to download (e.g. '2103.12345')",
+          "type": "string"
+        },
+        "start": {
+          "description": "Zero-based character offset for returning large papers in chunks",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "paper_id"
+      ],
+      "type": "object"
+    }
+  },
+  "get_abstract": {
+    "annotations": {
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Fetch the abstract and metadata of an arXiv paper by ID, WITHOUT downloading the full paper. Use this before download_paper to assess relevance and save tokens. Returns: title, authors, abstract, categories, published date, and PDF URL. Workflow tip: search_papers -> get_abstract (check relevance) -> download_paper (if needed) -> read_paper.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "paper_id": {
+          "description": "The arXiv paper ID (e.g. '2401.12345' or '2404.19756')",
+          "type": "string"
+        }
+      },
+      "required": [
+        "paper_id"
+      ],
+      "type": "object"
+    }
+  },
+  "library_influence": {
+    "annotations": {
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Descriptive influence panel over your locally-downloaded library. Builds the induced citation subgraph (A->B when downloaded paper A references downloaded paper B) and returns a side-by-side panel of signals per paper: personalised local PageRank, local in-library citation count, Semantic Scholar global citationCount / influentialCitationCount, the max author h-index, whether code appears available, and a `local_vs_global_delta` disagreement signal (positive = ranks higher locally than globally = a corpus-specific hidden gem). Operates on the whole local library by default; restrict with `paper_ids`. Requires the 'influence' extra: pip install arxiv-mcp-pro[influence].",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "compact": {
+          "description": "Return minified JSON (lower token cost), mirroring citation_graph's compact convention.",
+          "type": "boolean"
+        },
+        "paper_ids": {
+          "description": "Restrict the panel to this subset of arXiv IDs. Omit to use the entire local library.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "top_k": {
+          "default": 20,
+          "description": "Maximum number of rows to return, ranked by local PageRank descending (default: 20).",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "list_papers": {
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "description": "List all papers that have been downloaded and stored locally via download_paper. Returns arXiv IDs only \u2014 use read_paper to access content. Returns an empty list if no papers have been downloaded yet. Workflow: search_papers -> download_paper -> list_papers -> read_paper.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    }
+  },
+  "read_paper": {
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "description": "Read the text content of a paper that was previously downloaded via download_paper. Returns the paper in markdown format with start/max_chars pagination. Large papers are returned in capped chunks by default (60000 chars unless the server's CONTENT_DEFAULT_MAX_CHARS overrides it) \u2014 check `is_truncated` and follow `next_start` to page through the rest. Will fail with a clear error if the paper has not been downloaded yet \u2014 call download_paper first. Workflow: search_papers -> download_paper -> read_paper.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "max_chars": {
+          "description": "Maximum raw paper characters to return from start. When omitted, the server's default cap applies (CONTENT_DEFAULT_MAX_CHARS, default 60000; 0 disables). Pass an explicit value to override.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "paper_id": {
+          "description": "The arXiv ID of the paper to read",
+          "type": "string"
+        },
+        "start": {
+          "description": "Zero-based character offset for reading large papers in chunks",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "paper_id"
+      ],
+      "type": "object"
+    }
+  },
+  "reindex": {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Rebuild the local semantic index for downloaded papers.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "clear_existing": {
+          "default": true,
+          "description": "If true, clear the existing index before rebuilding.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "search_papers": {
+    "annotations": {
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Search for papers on arXiv with advanced filtering and query optimization.\n\nQUERY SEMANTICS: A bare space between terms is NOT treated as AND by the arXiv API \u2014 it ranks\nresults loosely (closer to OR), which makes a category filter advisory rather than strict. This\nserver joins the query, category, and date clauses with an explicit AND, so `categories` acts as\na hard filter. Note that `sort_by: \"date\"` returns a recency firehose only weakly filtered by the\nquery (observed in field use: near-identical result sets across different queries), so prefer\n`sort_by: \"relevance\"` (the default) for topical search. In the response, `total_results` is the\ncorpus-wide count of papers matching the query (from the feed's opensearch:totalResults; it falls\nback to the page size on the rare occasion the feed omits that element) and `returned` is the\nnumber of papers actually in this page.\n\nQUERY CONSTRUCTION GUIDELINES:\n- Use QUOTED PHRASES for exact matches: \"multi-agent systems\", \"neural networks\", \"machine learning\"\n- Combine related concepts with OR: \"AI agents\" OR \"software agents\" OR \"intelligent agents\"  \n- Use field-specific searches for precision:\n  - ti:\"exact title phrase\" - search in titles only\n  - au:\"author name\" - search by author\n  - abs:\"keyword\" - search in abstracts only\n- Use ANDNOT to exclude unwanted results: \"machine learning\" ANDNOT \"survey\"\n- For best results, use 2-4 core concepts rather than long keyword lists\n\nADVANCED SEARCH PATTERNS:\n- Field + phrase: ti:\"transformer architecture\" for papers with exact title phrase\n- Multiple fields: au:\"Smith\" AND ti:\"quantum\" for author Smith's quantum papers  \n- Exclusions: \"deep learning\" ANDNOT (\"survey\" OR \"review\") to exclude survey papers\n- Broad + narrow: \"artificial intelligence\" AND (robotics OR \"computer vision\")\n\nCATEGORY FILTERING (highly recommended for relevance):\nComputer Science:\n- cs.AI: Artificial Intelligence\n- cs.LG: Machine Learning\n- cs.CL: Computation and Language (NLP)\n- cs.CV: Computer Vision\n- cs.MA: Multi-Agent Systems\n- cs.RO: Robotics\n- cs.NE: Neural and Evolutionary Computing\n- cs.IR: Information Retrieval\n- cs.HC: Human-Computer Interaction\n- cs.CR: Cryptography and Security\n- cs.DB: Databases\nStatistics & Math:\n- stat.ML: Machine Learning (Statistics)\n- stat.AP: Applications\n- math.OC: Optimization and Control\n- math.ST: Statistics Theory\nPhysics & Other:\n- quant-ph: Quantum Physics\n- eess.SP: Signal Processing\n- eess.AS: Audio and Speech Processing\n- physics.data-an: Data Analysis and Statistics\n\nEXAMPLES OF EFFECTIVE QUERIES:\n- ti:\"reinforcement learning\" with categories: [\"cs.LG\", \"cs.AI\"] - for RL papers by title\n- au:\"Hinton\" AND \"deep learning\" with categories: [\"cs.LG\"] - for Hinton's deep learning work\n- \"multi-agent\" ANDNOT \"survey\" with categories: [\"cs.MA\"] - exclude survey papers\n- abs:\"transformer\" AND ti:\"attention\" with categories: [\"cs.CL\"] - attention papers with transformer abstracts\n\nDATE FILTERING: Use YYYY-MM-DD format for historical research:\n- date_to: \"2015-12-31\" - for foundational/classic work (pre-2016)\n- date_from: \"2020-01-01\" - for recent developments (post-2020)\n- Both together for specific time periods\n- Filters bind to arXiv's submittedDate \u2014 the ORIGINAL (v1) submission timestamp. For\n  cross-listed or revised papers this can differ from the arXiv-ID prefix month and from\n  the latest-version date, so papers near a boundary may appear to leak in or out of the\n  window. For strict windows, widen the range slightly and verify each hit's published field.\n\nRESULT QUALITY: Default sort is RELEVANCE (most pertinent results first). Use sort_by: \"date\" to get newest papers first.\nChoose relevance for focused topic searches; choose date for monitoring recent developments.\n\nRATE LIMITING: arXiv enforces a 3-second minimum between requests per IP. This server paces requests\nautomatically, including across parallel sessions on one machine (shared via the storage directory).\nIf you still see a rate limit error, follow the wait time in the error message before retrying \u2014\ndo not call the tool repeatedly in a loop; observed cooldowns can reach ~3 minutes.\n\nTIPS FOR FOUNDATIONAL RESEARCH:\n- Use date_to: \"2010-12-31\" to find classic papers on BDI, SOAR, ACT-R\n- Combine with field searches: ti:\"BDI\" AND abs:\"belief desire intention\"  \n- Try author searches: au:\"Rao\" AND \"BDI\" for Anand Rao's foundational BDI work",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "categories": {
+          "description": "Strongly recommended: arXiv categories to focus search (e.g., ['cs.AI', 'cs.MA'] for agent research, ['cs.LG'] for ML, ['cs.CL'] for NLP, ['cs.CV'] for vision). Greatly improves relevance.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "date_from": {
+          "description": "Start date for papers (YYYY-MM-DD format), inclusive. Binds to the original (v1) submission timestamp \u2014 see DATE FILTERING in the tool description. Use to find recent work, e.g., '2023-01-01' for last 2 years.",
+          "type": "string"
+        },
+        "date_to": {
+          "description": "End date for papers (YYYY-MM-DD format), inclusive. Binds to the original (v1) submission timestamp \u2014 see DATE FILTERING in the tool description. Use with date_from to find historical work, e.g., '2020-12-31' for older research.",
+          "type": "string"
+        },
+        "max_results": {
+          "description": "Maximum number of results to return (default: 10, max: 50). Use 15-20 for comprehensive searches.",
+          "type": "integer"
+        },
+        "query": {
+          "description": "Search query using quoted phrases for exact matches (e.g., '\"machine learning\" OR \"deep learning\"') or specific technical terms. Avoid overly broad or generic terms.",
+          "type": "string"
+        },
+        "sort_by": {
+          "description": "Sort results by 'relevance' (most relevant first, default) or 'date' (newest first). Use 'relevance' for focused searches, 'date' for recent developments.",
+          "enum": [
+            "relevance",
+            "date"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    }
+  },
+  "semantic_search": {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Semantic similarity search over papers you have already downloaded locally via download_paper. Supports free-text queries (e.g. 'attention mechanisms for long sequences') or finding papers similar to a given paper_id. IMPORTANT: only searches your local downloaded collection \u2014 will return empty results if no papers have been downloaded yet. Use search_papers to find papers on arXiv, then download_paper to add them to the local index before using this tool. Opt-in pagination: set `offset` to page through ranked results (page size = max_results); set `compact` to drop the full abstract from each result and cut token cost. When either is set, the response adds `offset`/`total_available`/`next_offset`. Omit both for full, unpaged output. Requires the [pro] extra: pip install \"arxiv-mcp-pro[pro]\" (from a source checkout: uv pip install -e \".[pro]\").",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "compact": {
+          "description": "Drop the full `abstract` from each result to cut token cost; all other fields (id, title, authors, categories, published, score, resource_uri) are kept. Omit for full output.",
+          "type": "boolean"
+        },
+        "max_results": {
+          "default": 10,
+          "description": "Maximum number of results to return (default: 10).",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "offset": {
+          "description": "Pagination offset into the ranked results (page size = max_results). Send `offset: 0` for page one WITH a cursor (`total_available`/`next_offset`), then follow `next_offset` for later pages. Omit `offset` entirely (with `compact` also unset) for legacy unpaged output and no cursor.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "paper_id": {
+          "description": "Find papers semantically similar to this arXiv paper ID.",
+          "type": "string"
+        },
+        "query": {
+          "description": "Free-text semantic query.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "watch_topic": {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Save or update a persistent research topic watch. When checked via check_alerts, returns only papers published since the last check \u2014 acting as a standing alert for new work on a topic. The topic string uses the same query syntax as search_papers (quoted phrases, field specifiers, boolean operators). Examples: '\"diffusion models\" AND ti:\"video generation\"', 'au:\"LeCun\" AND cs.LG'. Calling watch_topic with the same topic string updates the existing watch rather than creating a duplicate. Pair with check_alerts to poll for new papers.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "categories": {
+          "description": "Optional arXiv category filter (e.g. ['cs.LG', 'cs.AI']). Narrows results to specific fields.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "max_results": {
+          "default": 10,
+          "description": "Maximum papers to return per alert check (default: 10).",
+          "type": "integer"
+        },
+        "topic": {
+          "description": "Query string to monitor. Uses arXiv search syntax \u2014 quoted phrases for exact matches, field specifiers (ti:, au:, abs:), and boolean operators (AND, OR, ANDNOT). Example: '\"reinforcement learning\" AND \"robotics\"'.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "topic"
+      ],
+      "type": "object"
+    }
+  }
+}

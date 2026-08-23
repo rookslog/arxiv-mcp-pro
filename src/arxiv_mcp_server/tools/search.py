@@ -7,12 +7,14 @@ import httpx
 import asyncio
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
-from typing import Dict, Any, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 from datetime import datetime, timezone
 from urllib.parse import quote, urlparse
 from dateutil import parser
+from pydantic import Field
 import mcp.types as types
 from mcp.types import ToolAnnotations
+from ..schemas import ToolInput, schema_from_model
 from ..config import Settings
 from .arxiv_pacing import (
     pace_arxiv_request,
@@ -498,6 +500,46 @@ def _parse_arxiv_atom_response(
     return results, total_results
 
 
+class SearchPapersInput(ToolInput):
+    """Arguments for the `search_papers` tool."""
+
+    categories: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Strongly recommended: arXiv categories to focus search (e.g., ['cs.AI', 'cs.MA'] for agent research, ['cs.LG'] for ML, ['cs.CL'] for NLP, ['cs.CV'] for vision). Greatly improves relevance."
+        ),
+    )
+    date_from: Optional[str] = Field(
+        default=None,
+        description=(
+            "Start date for papers (YYYY-MM-DD format), inclusive. Binds to the original (v1) submission timestamp — see DATE FILTERING in the tool description. Use to find recent work, e.g., '2023-01-01' for last 2 years."
+        ),
+    )
+    date_to: Optional[str] = Field(
+        default=None,
+        description=(
+            "End date for papers (YYYY-MM-DD format), inclusive. Binds to the original (v1) submission timestamp — see DATE FILTERING in the tool description. Use with date_from to find historical work, e.g., '2020-12-31' for older research."
+        ),
+    )
+    max_results: Optional[int] = Field(
+        default=None,
+        description=(
+            "Maximum number of results to return (default: 10, max: 50). Use 15-20 for comprehensive searches."
+        ),
+    )
+    query: str = Field(
+        description=(
+            'Search query using quoted phrases for exact matches (e.g., \'"machine learning" OR "deep learning"\') or specific technical terms. Avoid overly broad or generic terms.'
+        )
+    )
+    sort_by: Optional[Literal["relevance", "date"]] = Field(
+        default=None,
+        description=(
+            "Sort results by 'relevance' (most relevant first, default) or 'date' (newest first). Use 'relevance' for focused searches, 'date' for recent developments."
+        ),
+    )
+
+
 search_tool = types.Tool(
     name="search_papers",
     annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True),
@@ -580,39 +622,7 @@ TIPS FOR FOUNDATIONAL RESEARCH:
 - Use date_to: "2010-12-31" to find classic papers on BDI, SOAR, ACT-R
 - Combine with field searches: ti:"BDI" AND abs:"belief desire intention"  
 - Try author searches: au:"Rao" AND "BDI" for Anand Rao's foundational BDI work""",
-    inputSchema={
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": 'Search query using quoted phrases for exact matches (e.g., \'"machine learning" OR "deep learning"\') or specific technical terms. Avoid overly broad or generic terms.',
-            },
-            "max_results": {
-                "type": "integer",
-                "description": "Maximum number of results to return (default: 10, max: 50). Use 15-20 for comprehensive searches.",
-            },
-            "date_from": {
-                "type": "string",
-                "description": "Start date for papers (YYYY-MM-DD format), inclusive. Binds to the original (v1) submission timestamp — see DATE FILTERING in the tool description. Use to find recent work, e.g., '2023-01-01' for last 2 years.",
-            },
-            "date_to": {
-                "type": "string",
-                "description": "End date for papers (YYYY-MM-DD format), inclusive. Binds to the original (v1) submission timestamp — see DATE FILTERING in the tool description. Use with date_from to find historical work, e.g., '2020-12-31' for older research.",
-            },
-            "categories": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Strongly recommended: arXiv categories to focus search (e.g., ['cs.AI', 'cs.MA'] for agent research, ['cs.LG'] for ML, ['cs.CL'] for NLP, ['cs.CV'] for vision). Greatly improves relevance.",
-            },
-            "sort_by": {
-                "type": "string",
-                "enum": ["relevance", "date"],
-                "description": "Sort results by 'relevance' (most relevant first, default) or 'date' (newest first). Use 'relevance' for focused searches, 'date' for recent developments.",
-            },
-        },
-        "required": ["query"],
-        "additionalProperties": False,
-    },
+    inputSchema=schema_from_model(SearchPapersInput),
 )
 
 

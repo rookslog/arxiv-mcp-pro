@@ -13,9 +13,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import arxiv
+from pydantic import Field
 import mcp.types as types
 from mcp.types import ToolAnnotations
 
+from ..schemas import ToolInput, schema_from_model
 from ..config import Settings
 from .arxiv_pacing import pace_arxiv_request_sync, record_arxiv_request
 from .list_papers import is_valid_arxiv_id
@@ -69,6 +71,45 @@ class IndexedPaper:
     score: float
 
 
+class ReindexInput(ToolInput):
+    """Arguments for the `reindex` tool."""
+
+    clear_existing: bool = Field(
+        default=True,
+        description=("If true, clear the existing index before rebuilding."),
+    )
+
+
+class SemanticSearchInput(ToolInput):
+    """Arguments for the `semantic_search` tool."""
+
+    compact: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Drop the full `abstract` from each result to cut token cost; all other fields (id, title, authors, categories, published, score, resource_uri) are kept. Omit for full output."
+        ),
+    )
+    max_results: int = Field(
+        default=10,
+        ge=0,
+        description=("Maximum number of results to return (default: 10)."),
+    )
+    offset: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Pagination offset into the ranked results (page size = max_results). Send `offset: 0` for page one WITH a cursor (`total_available`/`next_offset`), then follow `next_offset` for later pages. Omit `offset` entirely (with `compact` also unset) for legacy unpaged output and no cursor."
+        ),
+    )
+    paper_id: Optional[str] = Field(
+        default=None,
+        description=("Find papers semantically similar to this arXiv paper ID."),
+    )
+    query: Optional[str] = Field(
+        default=None, description=("Free-text semantic query.")
+    )
+
+
 semantic_search_tool = types.Tool(
     name="semantic_search",
     annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
@@ -85,35 +126,7 @@ semantic_search_tool = types.Tool(
         'Requires the [pro] extra: pip install "arxiv-mcp-pro[pro]" '
         '(from a source checkout: uv pip install -e ".[pro]").'
     ),
-    inputSchema={
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "Free-text semantic query.",
-            },
-            "paper_id": {
-                "type": "string",
-                "description": "Find papers semantically similar to this arXiv paper ID.",
-            },
-            "max_results": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "Maximum number of results to return (default: 10).",
-                "default": 10,
-            },
-            "offset": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "Pagination offset into the ranked results (page size = max_results). Send `offset: 0` for page one WITH a cursor (`total_available`/`next_offset`), then follow `next_offset` for later pages. Omit `offset` entirely (with `compact` also unset) for legacy unpaged output and no cursor.",
-            },
-            "compact": {
-                "type": "boolean",
-                "description": "Drop the full `abstract` from each result to cut token cost; all other fields (id, title, authors, categories, published, score, resource_uri) are kept. Omit for full output.",
-            },
-        },
-        "additionalProperties": False,
-    },
+    inputSchema=schema_from_model(SemanticSearchInput),
 )
 
 
@@ -123,17 +136,7 @@ reindex_tool = types.Tool(
         readOnlyHint=False, destructiveHint=False, openWorldHint=False
     ),
     description="Rebuild the local semantic index for downloaded papers.",
-    inputSchema={
-        "type": "object",
-        "properties": {
-            "clear_existing": {
-                "type": "boolean",
-                "description": "If true, clear the existing index before rebuilding.",
-                "default": True,
-            }
-        },
-        "additionalProperties": False,
-    },
+    inputSchema=schema_from_model(ReindexInput),
 )
 
 

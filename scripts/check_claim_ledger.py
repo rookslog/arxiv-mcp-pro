@@ -46,16 +46,26 @@ TEMPLATE = """| claim_id | claim | label | grade | locator | severity | notes |
 
 
 def parse_md_table(text: str):
-    rows = [ln for ln in text.splitlines() if ln.strip().startswith("|")]
+    lines = text.splitlines()
     # find header row that contains claim_id
-    for i, ln in enumerate(rows):
+    for i, ln in enumerate(lines):
+        if not ln.strip().startswith("|"):
+            continue
         cells = [c.strip().lower() for c in ln.strip().strip("|").split("|")]
         if "claim_id" in cells:
             header = cells
-            body = rows[i + 1 :]
             break
     else:
         return None, []
+    # The table ends at the first line that is not a row. Collecting every
+    # pipe-prefixed line in the document instead would splice any later
+    # unrelated table onto the ledger, and its cells would then be graded as
+    # claims against a header they were never written under.
+    body = []
+    for ln in lines[i + 1 :]:
+        if not ln.strip().startswith("|"):
+            break
+        body.append(ln)
     out = []
     for ln in body:
         if set(ln.strip()) <= set("|-: "):  # separator row

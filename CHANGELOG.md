@@ -33,7 +33,7 @@ All notable changes to this project are documented here. The format is based on
   HTTP 502 on every subsequent `initialize` — for 16 days, because the tunnel
   process itself stayed up and its health endpoints kept returning 200.
 
-  `_run_stdio` now calls `stdio_guard.protect_stdout()` first, which duplicates
+  `_run_stdio` now calls `stdio_guard.protected_stdout()` first, which duplicates
   fd 1 to a private descriptor for the transport and points fd 1 at stderr. The
   redirect is at the descriptor level, so it also covers C-extension writes
   (MuPDF is a C library) and references to stdout captured before startup —

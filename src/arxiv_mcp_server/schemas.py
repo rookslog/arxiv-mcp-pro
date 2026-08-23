@@ -37,14 +37,23 @@ class ToolInput(BaseModel):
 def _strip_nullable(node: Dict[str, Any]) -> Dict[str, Any]:
     """Collapse pydantic's `Optional[T]` encoding back to a plain type.
 
-    An optional *property* is modelled as ``anyOf: [{...T...}, {"type":
+    An *omittable* property is modelled as ``anyOf: [{...T...}, {"type":
     "null"}]``. A client reads a missing key as absent, so the null branch adds
     nothing there.
 
-    This applies to properties only. Inside a collection — `list[int | None]` —
-    the null branch is the difference between accepting `[null]` and rejecting
-    it, so collapsing it there would advertise a stricter schema than the model
-    actually enforces.
+    Two places it must be left alone, because in both the null branch is the
+    only thing permitting a value the model itself accepts:
+
+    * inside a collection — `list[int | None]` — where dropping it is the
+      difference between accepting `[null]` and rejecting it;
+    * on a *required* property — `value: int | None` with no default — which
+      the caller cannot omit, so `{"value": null}` is its only way to say
+      nothing, and a schema advertising bare `integer` would reject input the
+      handler would have taken.
+
+    Collapsing either would advertise a stricter schema than the model
+    enforces, which is the same drift this module exists to remove, pointing
+    the other way.
     """
     branches = node.get("anyOf")
     if not isinstance(branches, list):
@@ -75,6 +84,12 @@ def _clean_schema(node: Any) -> Any:
     if not isinstance(node, dict):
         return node
 
+    # Read from the enclosing object, not from each property: whether a null
+    # branch is redundant depends on whether the caller may omit the key, and
+    # only the parent knows that.
+    required = node.get("required")
+    required_names = set(required) if isinstance(required, list) else set()
+
     cleaned: Dict[str, Any] = {}
     for key, value in node.items():
         if key == "title":
@@ -84,7 +99,9 @@ def _clean_schema(node: Any) -> Any:
         if key == "properties" and isinstance(value, dict):
             cleaned[key] = {
                 name: (
-                    _clean_schema(_strip_nullable(sub))
+                    _clean_schema(
+                        sub if name in required_names else _strip_nullable(sub)
+                    )
                     if isinstance(sub, dict)
                     else sub
                 )

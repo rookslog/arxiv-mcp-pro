@@ -202,3 +202,47 @@ def test_a_self_referential_model_is_refused_loudly():
 
     with pytest.raises(ValueError, match="self-referential"):
         schema_from_model(Node)
+
+
+def test_a_required_nullable_field_keeps_its_null_branch():
+    """`value: int | None` with no default: the caller cannot omit it.
+
+    Explicit null is then the only way to say nothing, so collapsing the
+    encoding would advertise bare `integer` and reject input the model accepts
+    — the same schema/handler drift this module exists to remove, pointing the
+    other way.
+    """
+    from typing import Optional
+
+    from pydantic import Field
+
+    class Required(ToolInput):
+        value: Optional[int] = Field(description="a value that may be null")
+
+    schema = schema_from_model(Required)
+
+    assert schema["required"] == ["value"]
+    assert {b["type"] for b in schema["properties"]["value"]["anyOf"]} == {
+        "integer",
+        "null",
+    }
+
+
+def test_an_omittable_nullable_field_still_collapses():
+    """The companion case, so the fix above cannot be over-applied.
+
+    A field with a default can simply be left out, so its null branch says
+    nothing the absent key does not.
+    """
+    from typing import Optional
+
+    from pydantic import Field
+
+    class Omittable(ToolInput):
+        value: Optional[int] = Field(default=None, description="an optional value")
+
+    schema = schema_from_model(Omittable)
+
+    assert schema["required"] == []
+    assert schema["properties"]["value"]["type"] == "integer"
+    assert "anyOf" not in schema["properties"]["value"]

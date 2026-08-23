@@ -108,6 +108,10 @@ influence = [
 asyncio_mode = "auto"
 asyncio_fixture_loop_scope = "function"  # Added this line
 testpaths = ["tests"]
+# The repo root, so `tests/scripts/` can import the `scripts/` helpers under a
+# bare `pytest` (what CI runs). `python -m pytest` prepends the CWD and would
+# have masked the difference locally.
+pythonpath = ["."]
 addopts = "-v --cov=arxiv_mcp_server"
 
 [project.scripts]

@@ -8,8 +8,9 @@ passes a broken push whenever that other checkout happens to be fine.
 
 Putting the pushed worktree's `src` first establishes precedence; the child also
 checks package origin before collection so missing local files cannot fall back
-to another checkout, then rechecks the imported package after collection in case
-pytest startup changed the path. Neither fixes *distribution* metadata, which
+to another checkout, then rechecks the imported package after collection and
+around every test, in case pytest startup changed the path and the first import
+happens in a fixture or test body. Neither fixes *distribution* metadata, which
 is why this also checks the version — see below.
 """
 
@@ -43,19 +44,44 @@ if origin != expected:
 
 import pytest
 
+def _foreign_origin():
+    # None while unimported: a fixture or test body may still import it later.
+    module = sys.modules.get("arxiv_mcp_server")
+    if module is None:
+        return None
+    filename = getattr(module, "__file__", None)
+    origin = Path(filename).resolve() if filename else None
+    if origin is None or not origin.is_relative_to(expected.parent):
+        return (
+            f"pytest gate: imported arxiv_mcp_server from {origin}; "
+            f"expected a file under {expected.parent}"
+        )
+    return None
+
 class _OriginGuard:
+    def _check(self):
+        message = _foreign_origin()
+        if message:
+            pytest.exit(message, returncode=1)
+
     def pytest_collection_finish(self):
-        module = sys.modules.get("arxiv_mcp_server")
-        if module is None:
-            return
-        filename = getattr(module, "__file__", None)
-        origin = Path(filename).resolve() if filename else None
-        if origin is None or not origin.is_relative_to(expected.parent):
-            pytest.exit(
-                f"pytest gate: collected arxiv_mcp_server from {origin}; "
-                f"expected a file under {expected.parent}",
-                returncode=1,
-            )
+        self._check()
+
+    def pytest_runtest_setup(self):
+        self._check()
+
+    def pytest_runtest_call(self):
+        self._check()
+
+    def pytest_runtest_teardown(self):
+        self._check()
+
+    def pytest_sessionfinish(self, session):
+        # Backstop for an import in the last teardown or a session fixture.
+        message = _foreign_origin()
+        if message:
+            print(message, file=sys.stderr)
+            session.exitstatus = 1
 
 sys.exit(pytest.main(["-q", *sys.argv[2:]], plugins=[_OriginGuard()]))
 """

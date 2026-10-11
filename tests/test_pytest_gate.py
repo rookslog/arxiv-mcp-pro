@@ -150,3 +150,33 @@ def test_gate_refuses_neighbor_imported_after_conftest_changes_path(
     assert "pytest gate:" in result.stdout + result.stderr
     assert (pushed / "collected").exists(), result.stdout + result.stderr
     assert not (pushed / "executed").exists(), result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("where", ["fixture", "test body"])
+def test_gate_refuses_neighbor_first_imported_after_collection(
+    competing_checkouts, where
+):
+    """The post-collection check must not lapse when nothing imported yet."""
+    pushed, neighbor = competing_checkouts
+    (pushed / "conftest.py").write_text(
+        f"import sys\nsys.path.insert(0, {str(neighbor / 'src')!r})\n",
+        encoding="utf-8",
+    )
+    late_import = "    import arxiv_mcp_server as subject\n"
+    if where == "fixture":
+        body = (
+            "import pytest\n"
+            "@pytest.fixture\n"
+            "def subject():\n" + late_import + "    return subject\n"
+            "def test_late(subject):\n"
+        )
+    else:
+        body = "def test_late():\n" + late_import
+    (pushed / "tests" / "test_sentinel.py").write_text(
+        body + "    assert subject.HEALTHY\n", encoding="utf-8"
+    )
+
+    result = _run_gate(pushed, neighbor)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "pytest gate:" in result.stdout + result.stderr

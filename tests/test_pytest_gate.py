@@ -23,8 +23,14 @@ def competing_checkouts(tmp_path):
         )
     empty_template = tmp_path / "empty-template"
     empty_template.mkdir()
+    # Hooks export repository-local GIT_* variables; never let them redirect
+    # this synthetic init into the repository being pushed.
+    git_env = {
+        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+    }
     subprocess.run(
         ["git", "init", "-q", f"--template={empty_template}", str(pushed)],
+        env=git_env,
         check=True,
         capture_output=True,
     )

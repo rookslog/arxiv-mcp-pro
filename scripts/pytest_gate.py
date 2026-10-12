@@ -6,8 +6,12 @@ that ran `pip install -e .`, not at the branch under the push. The gate then
 collects one branch's tests and runs them against another branch's source, so it
 passes a broken push whenever that other checkout happens to be fine.
 
-Putting the pushed worktree's `src` first fixes module imports. It does not fix
-*distribution* metadata, which is why this also checks the version — see below.
+Putting the pushed worktree's `src` first establishes precedence; the child also
+checks package origin before collection so missing local files cannot fall back
+to another checkout, then rechecks the imported package after collection and
+around every test, in case pytest startup changed the path and the first import
+happens in a fixture or test body. Neither fixes *distribution* metadata, which
+is why this also checks the version — see below.
 """
 
 from __future__ import annotations
@@ -17,6 +21,70 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
+
+# Resolve without importing the package (and triggering server startup imports).
+# Keep the check and pytest in one interpreter with the same cwd and sys.path.
+_PYTEST_RUNNER = """
+import importlib.util
+import os
+from pathlib import Path
+import sys
+
+sys.path[0] = os.getcwd()
+expected = Path(sys.argv[1]).resolve() / "src/arxiv_mcp_server/__init__.py"
+if not expected.is_file():
+    sys.exit(f"pytest gate: missing local arxiv_mcp_server initializer: {expected}")
+
+spec = importlib.util.find_spec("arxiv_mcp_server")
+origin = Path(spec.origin).resolve() if spec and spec.origin else None
+if origin != expected:
+    sys.exit(
+        f"pytest gate: arxiv_mcp_server resolves to {origin}; expected {expected}"
+    )
+
+import pytest
+
+def _foreign_origin():
+    # None while unimported: a fixture or test body may still import it later.
+    module = sys.modules.get("arxiv_mcp_server")
+    if module is None:
+        return None
+    filename = getattr(module, "__file__", None)
+    origin = Path(filename).resolve() if filename else None
+    if origin is None or not origin.is_relative_to(expected.parent):
+        return (
+            f"pytest gate: imported arxiv_mcp_server from {origin}; "
+            f"expected a file under {expected.parent}"
+        )
+    return None
+
+class _OriginGuard:
+    def _check(self):
+        message = _foreign_origin()
+        if message:
+            pytest.exit(message, returncode=1)
+
+    def pytest_collection_finish(self):
+        self._check()
+
+    def pytest_runtest_setup(self):
+        self._check()
+
+    def pytest_runtest_call(self):
+        self._check()
+
+    def pytest_runtest_teardown(self):
+        self._check()
+
+    def pytest_sessionfinish(self, session):
+        # Backstop for an import in the last teardown or a session fixture.
+        message = _foreign_origin()
+        if message:
+            print(message, file=sys.stderr)
+            session.exitstatus = 1
+
+sys.exit(pytest.main(["-q", *sys.argv[2:]], plugins=[_OriginGuard()]))
+"""
 
 
 def _worktree_root() -> Path:
@@ -78,7 +146,9 @@ def main() -> int:
     _warn_if_metadata_is_from_another_checkout(root)
 
     return subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", *sys.argv[1:]], cwd=root, env=env
+        [sys.executable, "-c", _PYTEST_RUNNER, str(root), *sys.argv[1:]],
+        cwd=root,
+        env=env,
     ).returncode
 
 

@@ -37,6 +37,12 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- **Pre-push tests now refuse a missing or shadowed worktree package.** The
+  gate checks the local initializer and resolved package origin in the pytest
+  child before collection, then rechecks the imported package after collection
+  to catch path changes during pytest startup. This prevents a healthy installed
+  or neighboring checkout from hiding broken local source.
+
 - **CI and fresh installs were broken by `mcp` 2.0.** The dependency was
   specified as `mcp>=1.27.0` with no upper bound. `mcp` 2.0 removed the
   low-level `Server` decorator API — `list_prompts`, `get_prompt`, `list_tools`,

@@ -48,7 +48,7 @@ dependencies = [
     # mcp 2.0 removed the low-level `Server` decorator API (list_prompts,
     # get_prompt, list_tools, call_tool) that server.py is built on. Pinned
     # below 2 until that migration is done; see CHANGELOG under [Unreleased].
-    "mcp>=1.27.0,<2",
+    "mcp>=1.27.0,<3",
     "pydantic-settings>=2.1.0",
     "aiofiles>=23.2.1",
     "uvicorn>=0.30.0",
